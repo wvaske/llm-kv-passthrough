@@ -2,6 +2,8 @@
 
 This guide covers deploying KV-Bench with LMCache connector support, including configuration for CPU memory, local storage, and remote shared storage.
 
+> **Storage Backend Reference**: For detailed documentation on specific storage backends (NFS, Ceph, MinIO/S3), see the [Storage Backends Guide](storage-backends.md).
+
 ## Overview
 
 LMCache provides a hierarchical storage system for KV cache management:

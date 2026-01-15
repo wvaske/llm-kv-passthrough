@@ -1,11 +1,10 @@
-# KV-Bench Ansible Inventory Example
-# Copy this file and modify for your environment
+# KV-Bench Ansible Inventory - Ceph Storage
+# Deployment using Ceph RADOS for distributed object storage
 #
-# KV-Bench is designed to characterize storage workload patterns for
-# shared KV caches in LLM serving. This example uses NFS as the
-# shared storage backend to measure storage I/O patterns.
-#
-# For LMCache-specific deployment, see: inventory/lmcache.yml
+# This configuration is ideal for:
+# - Large-scale distributed deployments
+# - High availability requirements
+# - Characterizing Ceph I/O patterns for KV cache workloads
 
 all:
   vars:
@@ -13,46 +12,47 @@ all:
     # Global KV-Bench Settings
     # ===========================================
     kvbench_version: "latest"
-    kvbench_model: "llama-3.1-8b"
+    kvbench_model: "llama-3.1-70b"
     kvbench_gpu: "H100_SXM"
     kvbench_efficiency: 0.7
+    kvbench_tp_size: 4
     kvbench_log_level: "info"
 
     # ===========================================
-    # Shared Storage Configuration
+    # Ceph Storage Configuration
     # ===========================================
-    # NFS is the default for characterizing storage workloads.
-    # Other options: redis, ceph, s3 (MinIO), weka, mooncake
-    kvbench_storage: "nfs"
-    kvbench_filesystem_path: "/mnt/nfs/kvbench"
-
-    # NFS mount options (used by deploy playbook)
-    lmcache_nfs_server: "nfs-server.example.com"
-    lmcache_nfs_export: "/exports/kvbench"
-    lmcache_nfs_options: "rw,sync,hard,intr"
+    kvbench_storage: ceph
+    kvbench_ceph_pool: kvbench-cache
+    kvbench_ceph_conf_path: /etc/ceph/ceph.conf
+    kvbench_ceph_keyring_path: /etc/ceph/ceph.client.kvbench.keyring
+    kvbench_ceph_client_name: client.kvbench
+    kvbench_ceph_namespace: lmcache
 
     # ===========================================
     # LMCache Connector Settings
     # ===========================================
     kvbench_connector_type: lmcache
     kvbench_lmcache_chunk_size: 256
-    # kvbench_lmcache_world_size: 1
-    # kvbench_lmcache_worker_id: 0
+    kvbench_lmcache_model_name: "{{ kvbench_model }}"
 
     # ===========================================
     # Resource Allocation
     # ===========================================
-    kvbench_cpu_memory_gb: 64.0
+    kvbench_cpu_memory_gb: 128.0
     kvbench_memory_allocation: eager
     kvbench_nvme_storage_gb: 500.0
     kvbench_nvme_path: /var/lib/kvbench/nvme
+
+    # Local disk as Tier 2 cache (before Ceph)
+    lmcache_enable_local_disk: true
+    lmcache_local_disk_path: /var/lib/kvbench/cache
+    lmcache_local_disk_max_gb: 500.0
 
     # ===========================================
     # Metrics & Monitoring
     # ===========================================
     kvbench_metrics_enabled: true
     kvbench_prometheus_port: 9090
-    kvbench_include_histograms: true
 
     # ===========================================
     # Ansible Connection Settings
@@ -62,46 +62,56 @@ all:
 
   children:
     # ===========================================
-    # NFS Server (for storage workload testing)
+    # Ceph Monitors (for client configuration)
     # ===========================================
-    nfs_servers:
+    ceph_monitors:
       hosts:
-        nfs-1:
-          ansible_host: 10.0.0.5
+        ceph-mon-1:
+          ansible_host: 10.0.0.50
+        ceph-mon-2:
+          ansible_host: 10.0.0.51
+        ceph-mon-3:
+          ansible_host: 10.0.0.52
 
     # ===========================================
-    # Prefill Servers (prompt processing)
+    # Prefill Servers
     # ===========================================
     prefill:
+      vars:
+        kvbench_server_type: prefill
+        kvbench_cpu_memory_gb: 128.0
+
       hosts:
         prefill-1:
-          ansible_host: 10.0.0.11
-          kvbench_instance_id: prefill-1
-          kvbench_server_type: prefill
+          ansible_host: 10.0.1.11
+          kvbench_instance_id: ceph-prefill-01
           kvbench_lmcache_worker_id: 0
           kvbench_lmcache_world_size: 4
+
         prefill-2:
-          ansible_host: 10.0.0.12
-          kvbench_instance_id: prefill-2
-          kvbench_server_type: prefill
+          ansible_host: 10.0.1.12
+          kvbench_instance_id: ceph-prefill-02
           kvbench_lmcache_worker_id: 1
           kvbench_lmcache_world_size: 4
 
     # ===========================================
-    # Decode Servers (token generation)
+    # Decode Servers
     # ===========================================
     decode:
+      vars:
+        kvbench_server_type: decode
+        kvbench_cpu_memory_gb: 64.0
+
       hosts:
         decode-1:
-          ansible_host: 10.0.0.21
-          kvbench_instance_id: decode-1
-          kvbench_server_type: decode
+          ansible_host: 10.0.2.21
+          kvbench_instance_id: ceph-decode-01
           kvbench_lmcache_worker_id: 2
           kvbench_lmcache_world_size: 4
+
         decode-2:
-          ansible_host: 10.0.0.22
-          kvbench_instance_id: decode-2
-          kvbench_server_type: decode
+          ansible_host: 10.0.2.22
+          kvbench_instance_id: ceph-decode-02
           kvbench_lmcache_worker_id: 3
           kvbench_lmcache_world_size: 4
 
@@ -111,12 +121,13 @@ all:
     proxy:
       hosts:
         proxy-1:
-          ansible_host: 10.0.0.30
-          kvbench_instance_id: proxy-1
+          ansible_host: 10.0.3.30
+          kvbench_instance_id: ceph-proxy
           kvbench_server_type: proxy
+          kvbench_load_balance_strategy: least_connections
 
     # ===========================================
-    # Group All KV-Bench Servers
+    # Group All Servers
     # ===========================================
     kvbench_servers:
       children:
@@ -124,9 +135,6 @@ all:
         decode:
         proxy:
 
-    # ===========================================
-    # LMCache Servers (alternative grouping)
-    # ===========================================
     lmcache_servers:
       children:
         prefill:
