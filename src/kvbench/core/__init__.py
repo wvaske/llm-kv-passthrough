@@ -5,6 +5,8 @@ This module provides the foundational components for KV-Bench:
 - Configuration system with environment variable support
 - GPU hardware profiles for latency emulation
 - Model profiles for KV cache sizing
+- Latency calculator using roofline model
+- Token processing and cache key generation
 """
 
 from kvbench.core.config import (
@@ -24,6 +26,10 @@ from kvbench.core.gpu_profiles import (
     get_gpu_profile_info,
     list_gpu_profiles,
 )
+from kvbench.core.latency import (
+    LatencyBreakdown,
+    LatencyCalculator,
+)
 from kvbench.core.models import (
     MODEL_PROFILES,
     ModelProfile,
@@ -31,6 +37,11 @@ from kvbench.core.models import (
     get_model_profile,
     get_model_profile_info,
     list_model_profiles,
+)
+from kvbench.core.tokens import (
+    CacheKeyGenerator,
+    TokenChunk,
+    TokenProcessor,
 )
 
 __all__ = [
@@ -56,4 +67,11 @@ __all__ = [
     "get_model_profile_info",
     "list_model_profiles",
     "calculate_kv_cache_requirements",
+    # Latency
+    "LatencyBreakdown",
+    "LatencyCalculator",
+    # Tokens
+    "TokenProcessor",
+    "TokenChunk",
+    "CacheKeyGenerator",
 ]

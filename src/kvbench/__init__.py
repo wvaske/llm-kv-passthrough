@@ -6,7 +6,9 @@ A distributed mock LLM serving system for benchmarking KV cache management witho
 
 from kvbench.core.config import KVBenchConfig
 from kvbench.core.gpu_profiles import GPUProfile, get_gpu_profile, list_gpu_profiles
+from kvbench.core.latency import LatencyBreakdown, LatencyCalculator
 from kvbench.core.models import ModelProfile, get_model_profile, list_model_profiles
+from kvbench.core.tokens import CacheKeyGenerator, TokenProcessor
 
 __version__ = "1.0.0"
 
@@ -18,5 +20,9 @@ __all__ = [
     "ModelProfile",
     "get_model_profile",
     "list_model_profiles",
+    "LatencyCalculator",
+    "LatencyBreakdown",
+    "TokenProcessor",
+    "CacheKeyGenerator",
     "__version__",
 ]
