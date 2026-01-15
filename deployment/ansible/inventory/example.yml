@@ -1,0 +1,66 @@
+# KV-Bench Ansible Inventory Example
+# Copy this file and modify for your environment
+
+all:
+  vars:
+    # Global variables
+    kvbench_version: "latest"
+    kvbench_model: "llama-3.1-8b"
+    kvbench_gpu: "H100_SXM"
+    kvbench_storage: "redis"
+    kvbench_efficiency: 0.7
+    kvbench_log_level: "info"
+
+    # Redis configuration
+    redis_url: "redis://redis-1:6379"
+    redis_cluster: false
+
+    # Ansible connection settings
+    ansible_user: ubuntu
+    ansible_python_interpreter: /usr/bin/python3
+
+  children:
+    # Redis servers
+    redis:
+      hosts:
+        redis-1:
+          ansible_host: 10.0.0.10
+
+    # Prefill servers (prompt processing)
+    prefill:
+      hosts:
+        prefill-1:
+          ansible_host: 10.0.0.11
+          kvbench_instance_id: prefill-1
+          kvbench_server_type: prefill
+        prefill-2:
+          ansible_host: 10.0.0.12
+          kvbench_instance_id: prefill-2
+          kvbench_server_type: prefill
+
+    # Decode servers (token generation)
+    decode:
+      hosts:
+        decode-1:
+          ansible_host: 10.0.0.21
+          kvbench_instance_id: decode-1
+          kvbench_server_type: decode
+        decode-2:
+          ansible_host: 10.0.0.22
+          kvbench_instance_id: decode-2
+          kvbench_server_type: decode
+
+    # Proxy/load balancer
+    proxy:
+      hosts:
+        proxy-1:
+          ansible_host: 10.0.0.30
+          kvbench_instance_id: proxy-1
+          kvbench_server_type: proxy
+
+    # Group all KV-Bench servers
+    kvbench_servers:
+      children:
+        prefill:
+        decode:
+        proxy:

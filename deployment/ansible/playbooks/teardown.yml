@@ -1,0 +1,115 @@
+---
+# KV-Bench Teardown Playbook
+# Removes KV-Bench from all servers
+
+- name: Teardown KV-Bench
+  hosts: kvbench_servers
+  become: yes
+  vars:
+    kvbench_user: kvbench
+    kvbench_group: kvbench
+    kvbench_home: /opt/kvbench
+    kvbench_config_dir: /etc/kvbench
+    kvbench_log_dir: /var/log/kvbench
+    kvbench_data_dir: /var/lib/kvbench
+    # Set to true to preserve data directories
+    preserve_data: false
+    # Set to true to preserve logs
+    preserve_logs: false
+
+  tasks:
+    - name: Stop kvbench service
+      systemd:
+        name: kvbench
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Remove systemd service file
+      file:
+        path: /etc/systemd/system/kvbench.service
+        state: absent
+      notify: Reload systemd
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Backup configuration before removal
+      archive:
+        path: "{{ kvbench_config_dir }}"
+        dest: "/tmp/kvbench_config_backup_{{ ansible_date_time.iso8601_basic_short }}.tar.gz"
+        format: gz
+      ignore_errors: yes
+      when: preserve_data | bool
+
+    - name: Backup data before removal
+      archive:
+        path: "{{ kvbench_data_dir }}"
+        dest: "/tmp/kvbench_data_backup_{{ ansible_date_time.iso8601_basic_short }}.tar.gz"
+        format: gz
+      ignore_errors: yes
+      when: preserve_data | bool
+
+    - name: Backup logs before removal
+      archive:
+        path: "{{ kvbench_log_dir }}"
+        dest: "/tmp/kvbench_logs_backup_{{ ansible_date_time.iso8601_basic_short }}.tar.gz"
+        format: gz
+      ignore_errors: yes
+      when: preserve_logs | bool
+
+    - name: Remove kvbench home directory
+      file:
+        path: "{{ kvbench_home }}"
+        state: absent
+
+    - name: Remove configuration directory
+      file:
+        path: "{{ kvbench_config_dir }}"
+        state: absent
+
+    - name: Remove data directory
+      file:
+        path: "{{ kvbench_data_dir }}"
+        state: absent
+      when: not preserve_data | bool
+
+    - name: Remove log directory
+      file:
+        path: "{{ kvbench_log_dir }}"
+        state: absent
+      when: not preserve_logs | bool
+
+    - name: Remove kvbench user
+      user:
+        name: "{{ kvbench_user }}"
+        state: absent
+        remove: yes
+
+    - name: Remove kvbench group
+      group:
+        name: "{{ kvbench_group }}"
+        state: absent
+
+    - name: Clean up any remaining processes
+      shell: pkill -f kvbench || true
+      ignore_errors: yes
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+  post_tasks:
+    - name: Display cleanup summary
+      debug:
+        msg: |
+          KV-Bench has been removed from {{ inventory_hostname }}
+          {% if preserve_data | bool %}
+          Configuration backup: /tmp/kvbench_config_backup_{{ ansible_date_time.iso8601_basic_short }}.tar.gz
+          Data backup: /tmp/kvbench_data_backup_{{ ansible_date_time.iso8601_basic_short }}.tar.gz
+          {% endif %}
+          {% if preserve_logs | bool %}
+          Logs backup: /tmp/kvbench_logs_backup_{{ ansible_date_time.iso8601_basic_short }}.tar.gz
+          {% endif %}
