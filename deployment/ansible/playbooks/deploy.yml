@@ -1,0 +1,117 @@
+---
+# KV-Bench Deployment Playbook
+# Deploys KV-Bench to all servers in the inventory
+
+- name: Deploy KV-Bench
+  hosts: kvbench_servers
+  become: yes
+  vars:
+    kvbench_user: kvbench
+    kvbench_group: kvbench
+    kvbench_home: /opt/kvbench
+    kvbench_config_dir: /etc/kvbench
+    kvbench_log_dir: /var/log/kvbench
+    kvbench_data_dir: /var/lib/kvbench
+
+  tasks:
+    - name: Install system dependencies
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - curl
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Create kvbench group
+      group:
+        name: "{{ kvbench_group }}"
+        state: present
+
+    - name: Create kvbench user
+      user:
+        name: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        home: "{{ kvbench_home }}"
+        shell: /bin/bash
+        system: yes
+        create_home: yes
+
+    - name: Create required directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        mode: '0755'
+      loop:
+        - "{{ kvbench_home }}"
+        - "{{ kvbench_config_dir }}"
+        - "{{ kvbench_log_dir }}"
+        - "{{ kvbench_data_dir }}"
+
+    - name: Create Python virtual environment
+      command: python3 -m venv {{ kvbench_home }}/venv
+      args:
+        creates: "{{ kvbench_home }}/venv/bin/python"
+      become_user: "{{ kvbench_user }}"
+
+    - name: Install kvbench package
+      pip:
+        name: kvbench
+        state: "{{ 'latest' if kvbench_version == 'latest' else 'present' }}"
+        version: "{{ omit if kvbench_version == 'latest' else kvbench_version }}"
+        virtualenv: "{{ kvbench_home }}/venv"
+      become_user: "{{ kvbench_user }}"
+
+    - name: Deploy configuration file
+      template:
+        src: ../templates/config.yaml.j2
+        dest: "{{ kvbench_config_dir }}/config.yaml"
+        owner: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        mode: '0640'
+      notify: Restart kvbench
+
+    - name: Deploy systemd service
+      template:
+        src: ../templates/kvbench.service.j2
+        dest: /etc/systemd/system/kvbench.service
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Restart kvbench
+
+    - name: Enable and start kvbench service
+      systemd:
+        name: kvbench
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Wait for service to be ready
+      uri:
+        url: "http://localhost:8000/health"
+        method: GET
+        status_code: 200
+      register: health_check
+      until: health_check.status == 200
+      retries: 30
+      delay: 2
+      ignore_errors: yes
+
+    - name: Display service status
+      debug:
+        msg: "KV-Bench service is {{ 'running' if health_check.status == 200 else 'not ready' }}"
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Restart kvbench
+      systemd:
+        name: kvbench
+        state: restarted

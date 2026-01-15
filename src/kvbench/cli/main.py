@@ -32,31 +32,70 @@ def serve(
     port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
     model: str = typer.Option("llama-3.1-8b", "--model", "-m", help="Model profile to emulate"),
     gpu: str = typer.Option("H100_SXM", "--gpu", "-g", help="GPU profile to emulate"),
+    server_type: str = typer.Option("combined", "--type", "-t", help="Server type: combined, prefill, decode, proxy"),
+    storage: str = typer.Option("memory", "--storage", "-s", help="Storage backend: memory, local_disk, redis"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload for development"),
 ) -> None:
     """Start the KV-Bench server."""
+    import os
+
     console.print("[bold blue]KV-Bench Server[/bold blue]")
     console.print(f"Host: {host}")
     console.print(f"Port: {port}")
     console.print(f"Model: {model}")
     console.print(f"GPU: {gpu}")
+    console.print(f"Server Type: {server_type}")
+    console.print(f"Storage: {storage}")
 
     if config:
         console.print(f"Config: {config}")
         cfg = KVBenchConfig.from_yaml(config)
     else:
+        from kvbench.core.config import GPUEmulationConfig, ServerConfig, StorageConfig
+
         cfg = KVBenchConfig(
-            server={"host": host, "port": port, "model_profile": model},  # type: ignore[arg-type]
-            gpu={"gpu_profile": gpu},  # type: ignore[arg-type]
+            server=ServerConfig(
+                host=host,
+                port=port,
+                model_profile=model,
+                server_type=server_type,  # type: ignore[arg-type]
+                workers=workers,
+            ),
+            gpu=GPUEmulationConfig(gpu_profile=gpu),
+            storage=StorageConfig(backend_type=storage),  # type: ignore[arg-type]
         )
 
     console.print("\n[green]Configuration loaded:[/green]")
     console.print(f"  Instance ID: {cfg.instance_id}")
     console.print(f"  Server Type: {cfg.server.server_type}")
     console.print(f"  Storage: {cfg.storage.backend_type}")
+    console.print(f"  Model: {cfg.server.model_profile}")
+    console.print(f"  GPU: {cfg.gpu.gpu_profile}")
 
-    # Server implementation will be added in Phase 4
-    console.print("\n[yellow]Server not yet implemented (Phase 4)[/yellow]")
+    # Set environment variables for the app
+    os.environ["KVBENCH_SERVER__HOST"] = host
+    os.environ["KVBENCH_SERVER__PORT"] = str(port)
+    os.environ["KVBENCH_SERVER__MODEL_PROFILE"] = model
+    os.environ["KVBENCH_SERVER__SERVER_TYPE"] = server_type
+    os.environ["KVBENCH_GPU__GPU_PROFILE"] = gpu
+    os.environ["KVBENCH_STORAGE__BACKEND_TYPE"] = storage
+
+    console.print(f"\n[green]Starting server at http://{host}:{port}[/green]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    # Start uvicorn server
+    import uvicorn
+
+    uvicorn.run(
+        "kvbench.servers.app:app",
+        host=host,
+        port=port,
+        workers=workers if not reload else 1,
+        reload=reload,
+        log_level="info",
+    )
 
 
 @app.command()

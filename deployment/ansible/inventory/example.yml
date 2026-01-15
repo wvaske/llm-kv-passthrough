@@ -1,0 +1,133 @@
+# KV-Bench Ansible Inventory Example
+# Copy this file and modify for your environment
+#
+# KV-Bench is designed to characterize storage workload patterns for
+# shared KV caches in LLM serving. This example uses NFS as the
+# shared storage backend to measure storage I/O patterns.
+#
+# For LMCache-specific deployment, see: inventory/lmcache.yml
+
+all:
+  vars:
+    # ===========================================
+    # Global KV-Bench Settings
+    # ===========================================
+    kvbench_version: "latest"
+    kvbench_model: "llama-3.1-8b"
+    kvbench_gpu: "H100_SXM"
+    kvbench_efficiency: 0.7
+    kvbench_log_level: "info"
+
+    # ===========================================
+    # Shared Storage Configuration
+    # ===========================================
+    # NFS is the default for characterizing storage workloads.
+    # Other options: redis, ceph, s3 (MinIO), weka, mooncake
+    kvbench_storage: "nfs"
+    kvbench_filesystem_path: "/mnt/nfs/kvbench"
+
+    # NFS mount options (used by deploy playbook)
+    lmcache_nfs_server: "nfs-server.example.com"
+    lmcache_nfs_export: "/exports/kvbench"
+    lmcache_nfs_options: "rw,sync,hard,intr"
+
+    # ===========================================
+    # LMCache Connector Settings
+    # ===========================================
+    kvbench_connector_type: lmcache
+    kvbench_lmcache_chunk_size: 256
+    # kvbench_lmcache_world_size: 1
+    # kvbench_lmcache_worker_id: 0
+
+    # ===========================================
+    # Resource Allocation
+    # ===========================================
+    kvbench_cpu_memory_gb: 64.0
+    kvbench_memory_allocation: eager
+    kvbench_nvme_storage_gb: 500.0
+    kvbench_nvme_path: /var/lib/kvbench/nvme
+
+    # ===========================================
+    # Metrics & Monitoring
+    # ===========================================
+    kvbench_metrics_enabled: true
+    kvbench_prometheus_port: 9090
+    kvbench_include_histograms: true
+
+    # ===========================================
+    # Ansible Connection Settings
+    # ===========================================
+    ansible_user: ubuntu
+    ansible_python_interpreter: /usr/bin/python3
+
+  children:
+    # ===========================================
+    # NFS Server (for storage workload testing)
+    # ===========================================
+    nfs_servers:
+      hosts:
+        nfs-1:
+          ansible_host: 10.0.0.5
+
+    # ===========================================
+    # Prefill Servers (prompt processing)
+    # ===========================================
+    prefill:
+      hosts:
+        prefill-1:
+          ansible_host: 10.0.0.11
+          kvbench_instance_id: prefill-1
+          kvbench_server_type: prefill
+          kvbench_lmcache_worker_id: 0
+          kvbench_lmcache_world_size: 4
+        prefill-2:
+          ansible_host: 10.0.0.12
+          kvbench_instance_id: prefill-2
+          kvbench_server_type: prefill
+          kvbench_lmcache_worker_id: 1
+          kvbench_lmcache_world_size: 4
+
+    # ===========================================
+    # Decode Servers (token generation)
+    # ===========================================
+    decode:
+      hosts:
+        decode-1:
+          ansible_host: 10.0.0.21
+          kvbench_instance_id: decode-1
+          kvbench_server_type: decode
+          kvbench_lmcache_worker_id: 2
+          kvbench_lmcache_world_size: 4
+        decode-2:
+          ansible_host: 10.0.0.22
+          kvbench_instance_id: decode-2
+          kvbench_server_type: decode
+          kvbench_lmcache_worker_id: 3
+          kvbench_lmcache_world_size: 4
+
+    # ===========================================
+    # Proxy / Load Balancer
+    # ===========================================
+    proxy:
+      hosts:
+        proxy-1:
+          ansible_host: 10.0.0.30
+          kvbench_instance_id: proxy-1
+          kvbench_server_type: proxy
+
+    # ===========================================
+    # Group All KV-Bench Servers
+    # ===========================================
+    kvbench_servers:
+      children:
+        prefill:
+        decode:
+        proxy:
+
+    # ===========================================
+    # LMCache Servers (alternative grouping)
+    # ===========================================
+    lmcache_servers:
+      children:
+        prefill:
+        decode:

@@ -1,0 +1,36 @@
+# KV-Bench Simple Docker Compose
+# Single-node deployment with combined server
+version: "3.8"
+
+services:
+  kvbench:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: kvbench
+    ports:
+      - "8000:8000"
+    environment:
+      - KVBENCH_INSTANCE_ID=kvbench-standalone
+      - KVBENCH_SERVER__SERVER_TYPE=combined
+      - KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
+      - KVBENCH_GPU__GPU_PROFILE=H100_SXM
+      - KVBENCH_STORAGE__BACKEND_TYPE=memory
+      - KVBENCH_RESOURCES__CPU_MEMORY_GB=8.0
+    volumes:
+      - kvbench-data:/var/lib/kvbench
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  kvbench-data:
+    driver: local
+
+networks:
+  default:
+    name: kvbench-network

@@ -1,3 +1,5 @@
-"""Mooncake connector for KV-Bench (stub)."""
+"""Mooncake connector stub."""
 
-__all__: list[str] = []
+from kvbench.connectors.mooncake.connector import MooncakeConnector
+
+__all__ = ["MooncakeConnector"]

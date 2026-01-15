@@ -11,4 +11,29 @@ This module provides storage backend implementations:
 - MinIO storage (S3-compatible)
 """
 
-__all__: list[str] = []
+from kvbench.storage.base import StorageBackend, StorageItem, StorageStats
+from kvbench.storage.ceph import CephStorageBackend
+from kvbench.storage.factory import create_storage_backend
+from kvbench.storage.local_disk import LocalDiskStorageBackend
+from kvbench.storage.memory import MemoryStorageBackend
+from kvbench.storage.minio import MinIOStorageBackend
+from kvbench.storage.nfs import NFSStorageBackend
+from kvbench.storage.redis_backend import RedisStorageBackend
+from kvbench.storage.weka import WekaStorageBackend
+
+__all__ = [
+    # Base classes
+    "StorageBackend",
+    "StorageItem",
+    "StorageStats",
+    # Factory
+    "create_storage_backend",
+    # Implementations
+    "MemoryStorageBackend",
+    "LocalDiskStorageBackend",
+    "RedisStorageBackend",
+    "NFSStorageBackend",
+    "CephStorageBackend",
+    "WekaStorageBackend",
+    "MinIOStorageBackend",
+]

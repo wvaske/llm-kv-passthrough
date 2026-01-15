@@ -1,0 +1,64 @@
+[Unit]
+Description=KV-Bench Server ({{ kvbench_instance_id | default(inventory_hostname) }})
+Documentation=https://github.com/your-org/kvbench
+After=network.target
+{% if kvbench_storage == 'redis' %}
+Wants=redis.service
+{% endif %}
+
+[Service]
+Type=simple
+User={{ kvbench_user | default('kvbench') }}
+Group={{ kvbench_group | default('kvbench') }}
+WorkingDirectory={{ kvbench_home | default('/opt/kvbench') }}
+
+# Environment
+Environment="PATH={{ kvbench_home | default('/opt/kvbench') }}/venv/bin:/usr/local/bin:/usr/bin:/bin"
+{% if kvbench_extra_env is defined %}
+{% for key, value in kvbench_extra_env.items() %}
+Environment="{{ key }}={{ value }}"
+{% endfor %}
+{% endif %}
+
+# Command
+ExecStart={{ kvbench_home | default('/opt/kvbench') }}/venv/bin/kvbench serve --config {{ kvbench_config_dir | default('/etc/kvbench') }}/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restart policy
+Restart=always
+RestartSec=10
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=append:{{ kvbench_log_dir | default('/var/log/kvbench') }}/kvbench.log
+StandardError=append:{{ kvbench_log_dir | default('/var/log/kvbench') }}/kvbench-error.log
+
+# Resource limits
+{% if kvbench_limit_nofile is defined %}
+LimitNOFILE={{ kvbench_limit_nofile }}
+{% else %}
+LimitNOFILE=65535
+{% endif %}
+{% if kvbench_limit_nproc is defined %}
+LimitNPROC={{ kvbench_limit_nproc }}
+{% endif %}
+{% if kvbench_memory_limit is defined %}
+MemoryLimit={{ kvbench_memory_limit }}
+{% endif %}
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths={{ kvbench_data_dir | default('/var/lib/kvbench') }} {{ kvbench_log_dir | default('/var/log/kvbench') }}
+{% if kvbench_storage in ['nfs', 'weka'] %}
+ReadWritePaths={{ kvbench_filesystem_path | default('/mnt/kvbench') }}
+{% endif %}
+{% if kvbench_storage == 'local_disk' %}
+ReadWritePaths={{ kvbench_local_disk_path | default('/var/lib/kvbench/cache') }}
+{% endif %}
+
+[Install]
+WantedBy=multi-user.target

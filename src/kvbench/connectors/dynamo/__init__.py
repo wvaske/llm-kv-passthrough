@@ -1,3 +1,5 @@
-"""NVIDIA Dynamo connector for KV-Bench (stub)."""
+"""NVIDIA Dynamo connector stub."""
 
-__all__: list[str] = []
+from kvbench.connectors.dynamo.connector import DynamoConnector
+
+__all__ = ["DynamoConnector"]

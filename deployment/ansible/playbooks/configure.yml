@@ -1,0 +1,56 @@
+---
+# KV-Bench Configuration Update Playbook
+# Updates configuration on all KV-Bench servers
+
+- name: Configure KV-Bench
+  hosts: kvbench_servers
+  become: yes
+  vars:
+    kvbench_config_dir: /etc/kvbench
+    kvbench_user: kvbench
+    kvbench_group: kvbench
+
+  tasks:
+    - name: Backup existing configuration
+      copy:
+        src: "{{ kvbench_config_dir }}/config.yaml"
+        dest: "{{ kvbench_config_dir }}/config.yaml.backup.{{ ansible_date_time.iso8601_basic_short }}"
+        remote_src: yes
+        owner: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        mode: '0640'
+      ignore_errors: yes
+
+    - name: Deploy updated configuration
+      template:
+        src: ../templates/config.yaml.j2
+        dest: "{{ kvbench_config_dir }}/config.yaml"
+        owner: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        mode: '0640'
+        validate: "{{ kvbench_home | default('/opt/kvbench') }}/venv/bin/python -c 'import yaml; yaml.safe_load(open(\"%s\"))'"
+      notify: Restart kvbench
+
+    - name: Verify configuration syntax
+      command: >
+        {{ kvbench_home | default('/opt/kvbench') }}/venv/bin/python -c
+        "import yaml; yaml.safe_load(open('{{ kvbench_config_dir }}/config.yaml'))"
+      changed_when: false
+
+  handlers:
+    - name: Restart kvbench
+      systemd:
+        name: kvbench
+        state: restarted
+
+  post_tasks:
+    - name: Wait for service to be ready after restart
+      uri:
+        url: "http://localhost:8000/health"
+        method: GET
+        status_code: 200
+      register: health_check
+      until: health_check.status == 200
+      retries: 30
+      delay: 2
+      when: kvbench_restart is defined and kvbench_restart.changed

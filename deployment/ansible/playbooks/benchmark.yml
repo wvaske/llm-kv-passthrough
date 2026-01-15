@@ -1,0 +1,202 @@
+---
+# KV-Bench Benchmarking Playbook
+# Runs performance benchmarks against the KV-Bench cluster
+
+- name: Run KV-Bench Benchmarks
+  hosts: proxy
+  become: yes
+  vars:
+    benchmark_output_dir: /var/lib/kvbench/benchmarks
+    benchmark_concurrency: 10
+    benchmark_num_requests: 100
+    benchmark_model: "{{ kvbench_model | default('llama-3.1-8b') }}"
+    kvbench_home: /opt/kvbench
+
+  tasks:
+    - name: Create benchmark output directory
+      file:
+        path: "{{ benchmark_output_dir }}"
+        state: directory
+        owner: kvbench
+        group: kvbench
+        mode: '0755'
+
+    - name: Install benchmark dependencies
+      pip:
+        name:
+          - httpx
+          - pandas
+          - matplotlib
+        virtualenv: "{{ kvbench_home }}/venv"
+      become_user: kvbench
+
+    - name: Verify cluster health
+      uri:
+        url: "http://localhost:8000/health"
+        method: GET
+        status_code: 200
+      register: health_check
+      failed_when: health_check.status != 200
+
+    - name: Collect pre-benchmark metrics
+      uri:
+        url: "http://localhost:8000/metrics"
+        method: GET
+        return_content: yes
+      register: pre_metrics
+
+    - name: Save pre-benchmark metrics
+      copy:
+        content: "{{ pre_metrics.json | to_nice_json }}"
+        dest: "{{ benchmark_output_dir }}/pre_metrics_{{ ansible_date_time.iso8601_basic_short }}.json"
+        owner: kvbench
+        group: kvbench
+        mode: '0644'
+
+    - name: Run cache warmup requests
+      uri:
+        url: "http://localhost:8000/v1/chat/completions"
+        method: POST
+        body_format: json
+        body:
+          model: "{{ benchmark_model }}"
+          messages:
+            - role: user
+              content: "Warmup request {{ item }}"
+          max_tokens: 10
+        status_code: 200
+      loop: "{{ range(1, 6) | list }}"
+      ignore_errors: yes
+
+    - name: Run benchmark script
+      shell: |
+        {{ kvbench_home }}/venv/bin/python << 'EOF'
+        import httpx
+        import asyncio
+        import json
+        import time
+        from datetime import datetime
+
+        async def benchmark():
+            results = {
+                'timestamp': datetime.now().isoformat(),
+                'config': {
+                    'concurrency': {{ benchmark_concurrency }},
+                    'num_requests': {{ benchmark_num_requests }},
+                    'model': '{{ benchmark_model }}'
+                },
+                'requests': [],
+                'summary': {}
+            }
+
+            async def make_request(client, request_id):
+                start = time.perf_counter()
+                try:
+                    response = await client.post(
+                        'http://localhost:8000/v1/chat/completions',
+                        json={
+                            'model': '{{ benchmark_model }}',
+                            'messages': [{'role': 'user', 'content': f'Benchmark request {request_id}'}],
+                            'max_tokens': 20
+                        },
+                        timeout=30.0
+                    )
+                    elapsed = time.perf_counter() - start
+                    return {
+                        'request_id': request_id,
+                        'status': response.status_code,
+                        'latency_ms': elapsed * 1000,
+                        'success': response.status_code == 200
+                    }
+                except Exception as e:
+                    elapsed = time.perf_counter() - start
+                    return {
+                        'request_id': request_id,
+                        'status': 0,
+                        'latency_ms': elapsed * 1000,
+                        'success': False,
+                        'error': str(e)
+                    }
+
+            async with httpx.AsyncClient() as client:
+                # Run concurrent requests
+                semaphore = asyncio.Semaphore({{ benchmark_concurrency }})
+
+                async def bounded_request(request_id):
+                    async with semaphore:
+                        return await make_request(client, request_id)
+
+                start_time = time.perf_counter()
+                tasks = [bounded_request(i) for i in range({{ benchmark_num_requests }})]
+                results['requests'] = await asyncio.gather(*tasks)
+                total_time = time.perf_counter() - start_time
+
+            # Calculate summary statistics
+            latencies = [r['latency_ms'] for r in results['requests'] if r['success']]
+            if latencies:
+                latencies.sort()
+                results['summary'] = {
+                    'total_requests': len(results['requests']),
+                    'successful_requests': len(latencies),
+                    'failed_requests': len(results['requests']) - len(latencies),
+                    'total_time_seconds': total_time,
+                    'requests_per_second': len(results['requests']) / total_time,
+                    'latency_ms': {
+                        'min': min(latencies),
+                        'max': max(latencies),
+                        'mean': sum(latencies) / len(latencies),
+                        'p50': latencies[len(latencies) // 2],
+                        'p90': latencies[int(len(latencies) * 0.9)],
+                        'p99': latencies[int(len(latencies) * 0.99)] if len(latencies) > 100 else latencies[-1]
+                    }
+                }
+
+            return results
+
+        results = asyncio.run(benchmark())
+        print(json.dumps(results, indent=2))
+        EOF
+      args:
+        chdir: "{{ benchmark_output_dir }}"
+      register: benchmark_result
+      become_user: kvbench
+
+    - name: Save benchmark results
+      copy:
+        content: "{{ benchmark_result.stdout }}"
+        dest: "{{ benchmark_output_dir }}/benchmark_{{ ansible_date_time.iso8601_basic_short }}.json"
+        owner: kvbench
+        group: kvbench
+        mode: '0644'
+
+    - name: Collect post-benchmark metrics
+      uri:
+        url: "http://localhost:8000/metrics"
+        method: GET
+        return_content: yes
+      register: post_metrics
+
+    - name: Save post-benchmark metrics
+      copy:
+        content: "{{ post_metrics.json | to_nice_json }}"
+        dest: "{{ benchmark_output_dir }}/post_metrics_{{ ansible_date_time.iso8601_basic_short }}.json"
+        owner: kvbench
+        group: kvbench
+        mode: '0644'
+
+    - name: Fetch benchmark results to control node
+      fetch:
+        src: "{{ item }}"
+        dest: ./benchmark-results/
+        flat: no
+      loop:
+        - "{{ benchmark_output_dir }}/benchmark_{{ ansible_date_time.iso8601_basic_short }}.json"
+        - "{{ benchmark_output_dir }}/pre_metrics_{{ ansible_date_time.iso8601_basic_short }}.json"
+        - "{{ benchmark_output_dir }}/post_metrics_{{ ansible_date_time.iso8601_basic_short }}.json"
+
+    - name: Display benchmark summary
+      debug:
+        msg: |
+          Benchmark Complete!
+          Results saved to: {{ benchmark_output_dir }}/benchmark_{{ ansible_date_time.iso8601_basic_short }}.json
+          Summary: {{ (benchmark_result.stdout | from_json).summary | default({}) }}

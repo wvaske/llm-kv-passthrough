@@ -1,3 +1,5 @@
-"""LMCache connector for KV-Bench."""
+"""LMCache connector implementation."""
 
-__all__: list[str] = []
+from kvbench.connectors.lmcache.connector import LMCacheConfig, LMCacheConnector
+
+__all__ = ["LMCacheConnector", "LMCacheConfig"]

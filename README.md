@@ -4,10 +4,11 @@ Distributed mock LLM serving system for benchmarking KV cache management without
 
 ## Features
 
-- **Multi-host deployment** with shared storage (Redis, NFS, Ceph, Weka, MinIO)
+- **Multi-host deployment** with shared storage (Redis, NFS, Weka, S3/MinIO, Mooncake)
 - **Disaggregated prefill/decode** architecture emulation
-- **Pluggable KV backends** (LMCache, Mooncake, Dynamo)
-- **Configurable resources** (CPU memory, NVMe, external storage)
+- **Pluggable KV backends** (LMCache, Mooncake connectors)
+- **OpenAI-compatible API** for easy integration
+- **GPU timing emulation** based on real hardware specs
 - **GenAI-Perf compatible** for standardized benchmarking
 
 ## Installation
@@ -25,34 +26,58 @@ pip install kvbench[all]
 
 ## Quick Start
 
+### Start the Server
+
 ```bash
+# Basic server (in-memory storage)
+kvbench serve --model llama-3.1-8b --gpu H100_SXM
+
+# With Redis storage
+kvbench serve --model llama-3.1-8b --storage redis
+
 # List available profiles
 kvbench list-profiles
 
 # Show profile information
 kvbench info --gpu H100_SXM --model llama-3.1-8b
+```
 
-# Start the server (implementation coming in Phase 4)
-kvbench serve --model llama-3.1-8b --gpu H100_SXM
+### Send Requests
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.1-8b",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 100
+  }'
+```
+
+### Docker Deployment
+
+```bash
+# Single server
+docker run -p 8000:8000 kvbench:latest
+
+# Distributed deployment
+cd deployment/docker
+docker-compose -f docker-compose.distributed.yml up -d
 ```
 
 ## Configuration
 
-KV-Bench can be configured via:
-
-1. **Environment variables** (prefix: `KVBENCH_`)
-2. **YAML configuration file**
-3. **Programmatic configuration**
+KV-Bench can be configured via environment variables, YAML files, or CLI arguments.
 
 ### Environment Variables
 
 ```bash
-export KVBENCH_INSTANCE_ID=kvbench-0
-export KVBENCH_RESOURCES__CPU_MEMORY_GB=64.0
+export KVBENCH_SERVER__HOST=0.0.0.0
+export KVBENCH_SERVER__PORT=8000
+export KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
+export KVBENCH_GPU__GPU_PROFILE=H100_SXM
 export KVBENCH_STORAGE__BACKEND_TYPE=redis
 export KVBENCH_STORAGE__REDIS_URL=redis://localhost:6379
-export KVBENCH_GPU__GPU_PROFILE=H100_SXM
-export KVBENCH_SERVER__PORT=8000
 ```
 
 ### YAML Configuration
@@ -60,18 +85,23 @@ export KVBENCH_SERVER__PORT=8000
 ```yaml
 # config.yaml
 instance_id: kvbench-0
-resources:
-  cpu_memory_gb: 64.0
-  nvme_storage_gb: 500.0
-storage:
-  backend_type: redis
-  redis_url: redis://localhost:6379
-gpu:
-  gpu_profile: H100_SXM
-  efficiency_factor: 0.7
+
 server:
   port: 8000
   model_profile: llama-3.1-8b
+  server_type: combined
+
+gpu:
+  gpu_profile: H100_SXM
+  efficiency_factor: 0.7
+
+storage:
+  backend_type: redis
+  redis_url: redis://localhost:6379
+```
+
+```bash
+kvbench serve --config config.yaml
 ```
 
 ## Supported GPU Profiles
@@ -94,52 +124,124 @@ server:
 | llama-3.1-405b | 126 | 16384 | 8 | ~405B |
 | qwen-2.5-7b | 28 | 3584 | 4 | ~7B |
 | qwen-2.5-72b | 80 | 8192 | 8 | ~72B |
+| mistral-7b | 32 | 4096 | 8 | ~7B |
+| mixtral-8x7b | 32 | 4096 | 8 | ~47B |
+
+## Storage Backends
+
+| Backend | Description | Use Case |
+|---------|-------------|----------|
+| `memory` | In-memory with LRU | Testing, development |
+| `local_disk` | Local NVMe storage | Single-node production |
+| `redis` | Redis/Cluster | Multi-node shared cache |
+| `s3` | S3/MinIO | Cloud deployments |
+| `nfs` | NFS filesystem | On-premise clusters |
+| `weka` | Weka storage | HPC environments |
+| `mooncake` | Mooncake engine | Disaggregated serving |
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Client Requests                          │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Disaggregated Proxy                         │
+└─────────────────────────────────────────────────────────────────┘
+                    │                       │
+                    ▼                       ▼
+┌───────────────────────────┐   ┌───────────────────────────┐
+│     Prefill Servers       │   │      Decode Servers       │
+└───────────────────────────┘   └───────────────────────────┘
+                    │                       │
+                    └───────────┬───────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      KV Cache Connector                         │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Storage Backend                            │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Development
 
 ```bash
 # Clone the repository
-git clone https://github.com/kvbench/kvbench.git
+git clone https://github.com/your-org/kvbench.git
 cd kvbench
 
 # Install development dependencies
-make install-dev
+pip install -e ".[dev]"
 
 # Run tests
-make test
+pytest
 
 # Run tests with coverage
-make coverage
+pytest --cov=kvbench --cov-report=html
 
 # Format code
-make format
+ruff format .
 
-# Run type checks
-make type-check
+# Run linting
+ruff check .
+
+# Type checking
+mypy src/kvbench
 ```
 
 ## Project Structure
 
 ```
-kv-bench/
+kvbench/
 ├── src/kvbench/
-│   ├── core/           # Config, GPU/model profiles
-│   ├── kv/             # KV cache management
-│   ├── connectors/     # LMCache, Mooncake, Dynamo
-│   ├── storage/        # Storage backends
-│   ├── servers/        # HTTP servers
-│   ├── distributed/    # Distributed coordination
-│   ├── metrics/        # Prometheus metrics
+│   ├── core/           # Configuration, GPU/model profiles
+│   ├── connectors/     # LMCache, Mooncake connectors
+│   ├── storage/        # Storage backends (7 implementations)
+│   ├── servers/        # HTTP servers, OpenAI API
 │   └── cli/            # Command-line interface
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   └── e2e/
-├── docs/
+│   ├── unit/           # Unit tests
+│   └── e2e/            # End-to-end tests
+├── docs/               # MkDocs documentation
 ├── deployment/
-│   ├── docker/
-│   └── ansible/
-└── benchmarks/
+│   ├── docker/         # Docker Compose files
+│   └── ansible/        # Ansible playbooks
+└── scripts/            # Utility scripts
+```
+
+## Documentation
+
+Full documentation available at https://your-org.github.io/kvbench/
+
+Build locally:
+
+```bash
+cd docs
+pip install mkdocs mkdocs-material
+mkdocs serve
+```
+
+## Benchmarking
+
+### GenAI-Perf
+
+```bash
+genai-perf \
+  --endpoint http://localhost:8000/v1/chat/completions \
+  --model llama-3.1-8b \
+  --concurrency 10 \
+  --num-requests 100
+```
+
+### LMCache Integration
+
+```bash
+./scripts/lmcache_test.sh
 ```
 
 ## License

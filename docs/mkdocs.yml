@@ -1,0 +1,75 @@
+site_name: KV-Bench Documentation
+site_description: Distributed Mock LLM Server for KV Cache Benchmarking
+site_author: KV-Bench Team
+repo_url: https://github.com/your-org/kv-bench
+repo_name: kv-bench
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+    - Configuration: getting-started/configuration.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - GPU Emulation: architecture/gpu-emulation.md
+    - Storage Backends: architecture/storage.md
+    - KV Connectors: architecture/connectors.md
+  - Deployment:
+    - Docker: deployment/docker.md
+    - Ansible: deployment/ansible.md
+    - LMCache Server: deployment/lmcache.md
+    - Storage Backends: deployment/storage-backends.md
+  - Benchmarking:
+    - GenAI-Perf: benchmarking/genai-perf.md
+    - LMCache Integration: benchmarking/lmcache.md
+  - API Reference: api/
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - tables
+  - attr_list
+  - md_in_html
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/your-org/kv-bench
