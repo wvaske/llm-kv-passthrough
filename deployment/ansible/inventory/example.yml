@@ -1,9 +1,13 @@
 # KV-Bench Ansible Inventory Example
 # Copy this file and modify for your environment
+#
+# For LMCache-specific deployment, see: inventory/lmcache.yml
 
 all:
   vars:
-    # Global variables
+    # ===========================================
+    # Global KV-Bench Settings
+    # ===========================================
     kvbench_version: "latest"
     kvbench_model: "llama-3.1-8b"
     kvbench_gpu: "H100_SXM"
@@ -11,11 +15,34 @@ all:
     kvbench_efficiency: 0.7
     kvbench_log_level: "info"
 
-    # Redis configuration
+    # ===========================================
+    # LMCache Connector Settings (optional)
+    # Uncomment to enable LMCache connector
+    # ===========================================
+    # kvbench_connector_type: lmcache
+    # kvbench_lmcache_chunk_size: 256
+    # kvbench_lmcache_world_size: 1
+    # kvbench_lmcache_worker_id: 0
+
+    # ===========================================
+    # Resource Allocation
+    # ===========================================
+    # kvbench_cpu_memory_gb: 64.0
+    # kvbench_memory_allocation: eager
+    # kvbench_nvme_storage_gb: 500.0
+    # kvbench_nvme_path: /var/lib/kvbench/nvme
+
+    # ===========================================
+    # Redis Configuration (Tier 3 storage)
+    # ===========================================
     redis_url: "redis://redis-1:6379"
     redis_cluster: false
+    # redis_prefix: "kvbench"
+    # redis_ttl: 3600
 
-    # Ansible connection settings
+    # ===========================================
+    # Ansible Connection Settings
+    # ===========================================
     ansible_user: ubuntu
     ansible_python_interpreter: /usr/bin/python3
 

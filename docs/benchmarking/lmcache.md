@@ -2,6 +2,8 @@
 
 KV-Bench provides compatibility with [LMCache](https://github.com/LMCache/LMCache) for KV cache management benchmarking.
 
+> **Deployment Guide**: For detailed deployment instructions including multi-tier storage setup, see the [LMCache Deployment Guide](../deployment/lmcache.md).
+
 ## Overview
 
 LMCache is a KV cache management system for LLM serving that provides:
@@ -9,6 +11,7 @@ LMCache is a KV cache management system for LLM serving that provides:
 - **Prefix caching**: Reuse KV cache for shared prompt prefixes
 - **Distributed caching**: Share cache across multiple servers
 - **Chunked storage**: Efficient memory management with fixed-size chunks
+- **Multi-tier storage**: CPU memory → Local NVMe → Remote shared storage
 
 ## Architecture
 

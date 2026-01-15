@@ -41,6 +41,7 @@ nav:
   - Deployment:
     - Docker: deployment/docker.md
     - Ansible: deployment/ansible.md
+    - LMCache Server: deployment/lmcache.md
   - Benchmarking:
     - GenAI-Perf: benchmarking/genai-perf.md
     - LMCache Integration: benchmarking/lmcache.md

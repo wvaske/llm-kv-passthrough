@@ -1,0 +1,155 @@
+version: '3.8'
+
+# LMCache Multi-Tier Storage Deployment
+# Includes: Redis (remote), local disk cache, and in-memory hot cache
+
+services:
+  # ===========================================
+  # Tier 3: Remote Shared Storage (Redis)
+  # ===========================================
+  redis:
+    image: redis:7-alpine
+    container_name: lmcache-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 8gb
+      --maxmemory-policy allkeys-lru
+      --io-threads 4
+      --io-threads-do-reads yes
+      --lazyfree-lazy-eviction yes
+      --lazyfree-lazy-expire yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - lmcache-network
+
+  # ===========================================
+  # LMCache Server (Single Instance)
+  # ===========================================
+  lmcache-server:
+    image: kvbench:latest
+    container_name: lmcache-server
+    ports:
+      - "8000:8000"
+      - "9090:9090"
+    volumes:
+      # Tier 2: Local NVMe/disk cache
+      - lmcache_disk:/data/cache
+      # Optional: Mount actual NVMe device
+      # - /mnt/nvme:/data/nvme
+    environment:
+      # Instance configuration
+      KVBENCH_INSTANCE_ID: lmcache-server-01
+
+      # Server settings
+      KVBENCH_SERVER__HOST: "0.0.0.0"
+      KVBENCH_SERVER__PORT: "8000"
+      KVBENCH_SERVER__MODEL_PROFILE: "llama-3.1-8b"
+      KVBENCH_SERVER__SERVER_TYPE: "combined"
+
+      # GPU emulation
+      KVBENCH_GPU__GPU_PROFILE: "H100_SXM"
+      KVBENCH_GPU__EFFICIENCY_FACTOR: "0.7"
+
+      # Tier 1: CPU Memory (Hot cache)
+      KVBENCH_RESOURCES__CPU_MEMORY_GB: "32"
+      KVBENCH_RESOURCES__MEMORY_ALLOCATION: "eager"
+      KVBENCH_RESOURCES__NVME_STORAGE_GB: "100"
+      KVBENCH_RESOURCES__NVME_PATH: "/data/nvme"
+
+      # Tier 3: Redis (Cold cache / Shared storage)
+      KVBENCH_STORAGE__BACKEND_TYPE: "redis"
+      KVBENCH_STORAGE__REDIS_URL: "redis://redis:6379"
+      KVBENCH_STORAGE__REDIS_PREFIX: "lmcache"
+      KVBENCH_STORAGE__REDIS_TTL: "3600"
+
+      # LMCache connector configuration
+      KVBENCH_CONNECTOR__CONNECTOR_TYPE: "lmcache"
+      KVBENCH_CONNECTOR__LMCACHE_CHUNK_SIZE: "256"
+      KVBENCH_CONNECTOR__LMCACHE_MODEL_NAME: "llama-3.1-8b"
+      KVBENCH_CONNECTOR__LMCACHE_WORLD_SIZE: "1"
+      KVBENCH_CONNECTOR__LMCACHE_WORKER_ID: "0"
+
+      # Metrics
+      KVBENCH_METRICS__ENABLED: "true"
+      KVBENCH_METRICS__PROMETHEUS_PORT: "9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - lmcache-network
+    deploy:
+      resources:
+        limits:
+          memory: 40G
+        reservations:
+          memory: 32G
+
+  # ===========================================
+  # Prometheus (Optional Monitoring)
+  # ===========================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lmcache-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus-lmcache.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - lmcache-network
+    profiles:
+      - monitoring
+
+  # ===========================================
+  # Grafana (Optional Monitoring)
+  # ===========================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lmcache-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    restart: unless-stopped
+    networks:
+      - lmcache-network
+    profiles:
+      - monitoring
+
+volumes:
+  redis_data:
+    driver: local
+  lmcache_disk:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  lmcache-network:
+    driver: bridge
