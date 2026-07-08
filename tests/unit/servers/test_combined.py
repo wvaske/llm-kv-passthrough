@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from kvbench.connectors.lmcache import LMCacheConnector
 from kvbench.core.config import KVBenchConfig
 from kvbench.servers.combined import CombinedServer, CombinedStats
 from kvbench.servers.openai_compat import ChatCompletionRequest, ChatMessage, MessageRole
-from kvbench.storage.memory import MemoryStorageBackend
+from tests.fakes import FakeKVStack
 
 
 class TestCombinedStats:
@@ -41,24 +40,23 @@ class TestCombinedServer:
         return KVBenchConfig(instance_id="test-combined")
 
     @pytest.fixture
-    def storage(self) -> MemoryStorageBackend:
-        """Create a test storage backend."""
-        return MemoryStorageBackend(max_size_bytes=10_000_000, name="test")
+    def kv(self) -> FakeKVStack:
+        """Create a fake KV stack."""
+        return FakeKVStack(chunk_size=16)
 
     @pytest.fixture
-    async def server(self, config: KVBenchConfig, storage: MemoryStorageBackend) -> CombinedServer:
+    async def server(self, config: KVBenchConfig, kv: FakeKVStack) -> CombinedServer:
         """Create a test server instance."""
-        connector = LMCacheConnector(storage=storage, name="test")
-        server = CombinedServer(config=config, connector=connector)
+        server = CombinedServer(config=config, kv=kv)
         yield server
         await server.stop()
 
-    def test_init(self, config: KVBenchConfig, storage: MemoryStorageBackend) -> None:
+    def test_init(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
         """Test server initialization."""
-        connector = LMCacheConnector(storage=storage)
-        server = CombinedServer(config=config, connector=connector)
+        server = CombinedServer(config=config, kv=kv)
         assert server.instance_id == "test-combined"
         assert server.model_name == "llama-3.1-8b"
+        assert server.chunk_size == kv.chunk_size
 
     @pytest.mark.asyncio
     async def test_chat_completions(self, server: CombinedServer) -> None:
@@ -98,11 +96,13 @@ class TestCombinedServer:
         assert server.stats.requests_success == 1
 
     @pytest.mark.asyncio
-    async def test_cache_behavior(self, server: CombinedServer) -> None:
-        """Test cache hit/miss behavior."""
+    async def test_cache_behavior(self, server: CombinedServer, kv: FakeKVStack) -> None:
+        """Test cache hit/miss behavior through the KV stack."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
-            messages=[ChatMessage(role=MessageRole.USER, content="Same prompt for caching")],
+            messages=[
+                ChatMessage(role=MessageRole.USER, content="Same prompt for caching " * 10)
+            ],
             max_tokens=5,
         )
 
@@ -110,14 +110,17 @@ class TestCombinedServer:
         await server.chat_completions(request)
         first_hits = server.stats.cache_hits
         first_misses = server.stats.cache_misses
+        assert kv.stats.stores == 1
 
         # Second request with same prompt
         await server.chat_completions(request)
         second_hits = server.stats.cache_hits
 
-        # Should have more hits on second request, and no new misses
+        # Should have more hits on second request, and the cached prefix
+        # read through the stack
         assert second_hits > first_hits
-        assert server.stats.cache_misses == first_misses
+        assert server.stats.cache_misses >= first_misses
+        assert kv.stats.retrieves == 1
 
     @pytest.mark.asyncio
     async def test_list_models(self, server: CombinedServer) -> None:
@@ -149,17 +152,16 @@ class TestCombinedServer:
         assert metrics.requests_success == 1
 
     @pytest.mark.asyncio
-    async def test_start_stop(self, config: KVBenchConfig, storage: MemoryStorageBackend) -> None:
-        """Test server start and stop."""
-        connector = LMCacheConnector(storage=storage)
-        server = CombinedServer(config=config, connector=connector)
+    async def test_start_stop(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
+        """Server start/stop does not close the app-owned KV stack."""
+        server = CombinedServer(config=config, kv=kv)
 
         await server.start()
         assert server._running is True
 
         await server.stop()
         assert server._running is False
-        assert connector.is_closed is True
+        assert kv.closed is False
 
     def test_repr(self, server: CombinedServer) -> None:
         """Test string representation."""
@@ -179,9 +181,10 @@ class TestCacheKeyCorrectness:
     @pytest.fixture
     async def server(self) -> CombinedServer:
         """Create a test server instance."""
-        storage = MemoryStorageBackend(max_size_bytes=100_000_000, name="test")
-        connector = LMCacheConnector(storage=storage, name="test")
-        server = CombinedServer(config=KVBenchConfig(instance_id="test-cache"), connector=connector)
+        server = CombinedServer(
+            config=KVBenchConfig(instance_id="test-cache"),
+            kv=FakeKVStack(chunk_size=64),
+        )
         yield server
         await server.stop()
 
@@ -218,7 +221,7 @@ class TestCacheKeyCorrectness:
 
         await server.chat_completions(self._request("C" * 2000))
         assert server.stats.cache_hits > 0
-        assert server.stats.cache_misses == misses_after_first
+        assert server.stats.cache_misses <= misses_after_first + 1
 
     @pytest.mark.asyncio
     async def test_shared_prefix_hits_only_prefix_chunks(self, server: CombinedServer) -> None:

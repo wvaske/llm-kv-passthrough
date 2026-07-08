@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from kvbench.connectors.factory import create_connector
 from kvbench.core.config import KVBenchConfig
+from kvbench.kv.factory import create_kv_stack
 from kvbench.servers.combined import CombinedServer
 from kvbench.servers.decode import DecodeServer
 from kvbench.servers.factory import create_server
@@ -29,7 +29,6 @@ from kvbench.servers.openai_compat import (
 )
 from kvbench.servers.prefill import PrefillServer
 from kvbench.servers.proxy import DisaggregatedProxy
-from kvbench.storage.factory import create_storage_backend
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -58,8 +57,7 @@ class KVBenchApp:
         self._server: PrefillServer | DecodeServer | CombinedServer | DisaggregatedProxy | None = (
             None
         )
-        self._storage = None
-        self._connector = None
+        self._kv = None
 
         @asynccontextmanager
         async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
@@ -80,23 +78,14 @@ class KVBenchApp:
         """Initialize server components on startup."""
         logger.info(f"Starting KV-Bench server (type: {self.config.server.server_type})")
 
-        # Create storage backend
-        self._storage = create_storage_backend(
-            self.config.storage,
-            self.config.resources,
-            name="kvbench-storage",
-        )
-
-        # Create connector (not needed for proxy)
+        # Start the KV management stack (not needed for proxy); it owns
+        # all storage — KV-Bench itself never touches a storage backend
         if self.config.server.server_type != "proxy":
-            self._connector = create_connector(
-                self.config.connector,
-                self._storage,
-                name="kvbench-connector",
-            )
+            self._kv = create_kv_stack(self.config)
+            await self._kv.start()
 
         # Create server
-        self._server = create_server(self.config, self._connector)
+        self._server = create_server(self.config, self._kv)
         await self._server.start()
 
         logger.info(
@@ -110,11 +99,8 @@ class KVBenchApp:
         if self._server:
             await self._server.stop()
 
-        if self._connector and hasattr(self._connector, "close"):
-            await self._connector.close()
-
-        if self._storage and hasattr(self._storage, "close"):
-            await self._storage.close()
+        if self._kv is not None:
+            await self._kv.close()
 
         logger.info("KV-Bench server stopped")
 

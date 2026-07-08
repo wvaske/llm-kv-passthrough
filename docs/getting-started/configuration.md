@@ -18,13 +18,14 @@ export KVBENCH_GPU__GPU_PROFILE=H100_SXM
 export KVBENCH_GPU__EFFICIENCY_FACTOR=0.7
 export KVBENCH_GPU__TP_SIZE=1
 
-# Storage
-export KVBENCH_STORAGE__BACKEND_TYPE=memory
-export KVBENCH_STORAGE__REDIS_URL=redis://localhost:6379
+# KV management stack (storage is configured through LMCache itself)
+export KVBENCH_KV__STACK=lmcache
+export KVBENCH_KV__LMCACHE_CONFIG_FILE=/etc/kvbench/lmcache.yaml
 
-# Resources
-export KVBENCH_RESOURCES__CPU_MEMORY_GB=8.0
-export KVBENCH_RESOURCES__NVME_STORAGE_GB=100.0
+# Or configure LMCache via its own environment variables instead of a file
+export LMCACHE_CHUNK_SIZE=256
+export LMCACHE_LOCAL_DISK="file:///var/lib/lmcache/"
+export LMCACHE_MAX_LOCAL_DISK_SIZE=100
 ```
 
 ## YAML Configuration
@@ -47,20 +48,10 @@ gpu:
   efficiency_factor: 0.7
   tp_size: 1
 
-storage:
-  backend_type: redis
-  redis_url: redis://localhost:6379
-  redis_cluster: false
-
-connector:
-  connector_type: lmcache
-  lmcache_chunk_size: 256
-
-resources:
-  cpu_memory_gb: 16.0
-  nvme_storage_gb: 500.0
-  nvme_path: /var/lib/kvbench/nvme
-  memory_allocation: lazy
+kv:
+  stack: lmcache
+  # LMCache's own config file controls all storage (tiers, backends, sizes)
+  lmcache_config_file: /etc/kvbench/lmcache.yaml
 
 distributed:
   prefill_endpoints:
@@ -104,16 +95,15 @@ kvbench serve --config config.yaml
 | `efficiency_factor` | `0.7` | GPU efficiency (0.1-1.0) |
 | `tp_size` | `1` | Tensor parallelism size |
 
-### Storage Options
+### KV Stack Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `backend_type` | `memory` | Storage backend |
-| `redis_url` | `None` | Redis connection URL |
-| `redis_cluster` | `false` | Use Redis cluster mode |
-| `filesystem_path` | `None` | Path for NFS/Weka backends |
-| `s3_endpoint` | `None` | S3/MinIO endpoint URL |
-| `s3_bucket` | `None` | S3 bucket name |
+| `stack` | `lmcache` | KV management stack (`kvbm` planned) |
+| `lmcache_config_file` | `None` | LMCache's own config file; `LMCACHE_*` env vars are used when unset |
+
+Storage backends, tier sizes, and eviction are configured in LMCache's own
+application configuration — see [Storage](../architecture/storage.md).
 
 ### Available GPU Profiles
 

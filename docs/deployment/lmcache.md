@@ -1,5 +1,14 @@
 # LMCache Server Deployment
 
+> **⚠️ Outdated**: This guide predates the real-LMCache integration and
+> references removed KV-Bench storage settings (`storage:`, `connector:`,
+> `KVBENCH_STORAGE_*`). Storage is now configured entirely through
+> LMCache's own application configuration — see
+> [Storage](../architecture/storage.md) and
+> [LMCache Integration](../benchmarking/lmcache.md). The infrastructure
+> steps below (installing Redis, mounting NFS, etc.) remain useful;
+> point LMCache's `remote_url`/`local_disk` at the result.
+
 This guide covers deploying KV-Bench with LMCache connector support, including configuration for CPU memory, local storage, and remote shared storage.
 
 > **Storage Backend Reference**: For detailed documentation on specific storage backends (NFS, Ceph, MinIO/S3), see the [Storage Backends Guide](storage-backends.md).

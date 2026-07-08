@@ -19,6 +19,7 @@ from kvbench.core.config import (
     ServerConfig,
 )
 from kvbench.servers.app import create_app, load_config
+from tests.fakes import FakeKVStack
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +31,16 @@ def reset_lazy_app(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.startswith("KVBENCH_"):
             monkeypatch.delenv(key)
+
+
+@pytest.fixture(autouse=True)
+def fake_kv_stack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Substitute the real LMCache stack with an in-memory fake.
+
+    The HTTP-layer tests exercise the app, not LMCache; the real stack is
+    covered by tests/integration/test_lmcache_stack.py.
+    """
+    monkeypatch.setattr(app_module, "create_kv_stack", lambda _config: FakeKVStack())
 
 
 def make_config(**server_kwargs: object) -> KVBenchConfig:

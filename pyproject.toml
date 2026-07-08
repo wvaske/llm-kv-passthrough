@@ -31,17 +31,20 @@ dependencies = [
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.27.0",
     "httpx>=0.26.0",
-    "aiofiles>=23.2.1",
-    "redis>=5.0.0",
-    "aioboto3>=12.0.0",
     "structlog>=24.1.0",
     "rich>=13.7.0",
     "typer>=0.9.0",
     "prometheus-client>=0.19.0",
     "orjson>=3.9.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
+# The KV management stack. Required to run servers; optional so tooling and
+# unit tests install without torch. Runs CPU-only — no GPU required.
+lmcache = [
+    "lmcache>=0.5.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -52,19 +55,14 @@ dev = [
     "black>=24.1.0",
     "mypy>=1.8.0",
     "pre-commit>=3.6.0",
-    "types-aiofiles>=23.2.0",
-    "types-redis>=4.6.0",
 ]
 docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.5.0",
     "mkdocstrings[python]>=0.24.0",
 ]
-storage = [
-    "rados>=2.0.0",  # Ceph
-]
 all = [
-    "kvbench[dev,docs,storage]",
+    "kvbench[lmcache,dev,docs]",
 ]
 
 [project.scripts]
@@ -94,7 +92,7 @@ addopts = [
 ]
 markers = [
     "slow: marks tests as slow",
-    "integration: marks tests as integration tests",
+    "integration: tests that drive the real LMCache engine (require kvbench[lmcache])",
     "e2e: marks tests as end-to-end tests",
 ]
 
@@ -160,10 +158,8 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = [
-    "redis.*",
-    "aioboto3.*",
-    "rados.*",
     "prometheus_client.*",
+    "lmcache.*",
 ]
 ignore_missing_imports = true
 

@@ -16,112 +16,31 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-class ResourceLimits(BaseModel):
-    """Resource limits for CPU memory and NVMe storage.
+class KVStackConfig(BaseModel):
+    """KV management stack configuration.
+
+    KV-Bench never performs storage I/O itself — all KV cache operations go
+    through a real KV management stack, and that stack's own application
+    configuration controls storage (backends, tier sizes, eviction).
+    KV-Bench deliberately has no storage settings of its own.
 
     Attributes:
-        cpu_memory_gb: Maximum CPU memory allocation in gigabytes.
-        nvme_storage_gb: Maximum NVMe storage allocation in gigabytes.
-        nvme_path: Path to NVMe storage directory.
-        memory_allocation: Memory allocation strategy.
+        stack: Which KV management stack to use.
+        lmcache_config_file: Path to LMCache's own configuration file,
+            passed verbatim to LMCacheEngineConfig.from_file(). When unset,
+            LMCache is configured from its LMCACHE_* environment variables.
     """
 
-    cpu_memory_gb: float = Field(
-        default=8.0,
-        ge=0.1,
-        le=1024.0,
-        description="Maximum CPU memory allocation in GB",
+    stack: Literal["lmcache"] = Field(
+        default="lmcache",
+        description="KV management stack ('kvbm' planned)",
     )
-    nvme_storage_gb: float = Field(
-        default=100.0,
-        ge=0.0,
-        le=10000.0,
-        description="Maximum NVMe storage allocation in GB",
-    )
-    nvme_path: Path = Field(
-        default=Path("/var/lib/kvbench/nvme"),
-        description="Path to NVMe storage directory",
-    )
-    memory_allocation: Literal["greedy", "lazy", "pool"] = Field(
-        default="lazy",
-        description="Memory allocation strategy",
+    lmcache_config_file: Path | None = Field(
+        default=None,
+        description="Path to LMCache's own config file (LMCACHE_* env vars are used when unset)",
     )
 
-    @field_validator("nvme_path", mode="before")
-    @classmethod
-    def convert_nvme_path(cls, v: str | Path) -> Path:
-        """Convert string path to Path object."""
-        return Path(v) if isinstance(v, str) else v
-
-    @property
-    def cpu_memory_bytes(self) -> int:
-        """Return CPU memory limit in bytes."""
-        return int(self.cpu_memory_gb * 1024**3)
-
-    @property
-    def nvme_storage_bytes(self) -> int:
-        """Return NVMe storage limit in bytes."""
-        return int(self.nvme_storage_gb * 1024**3)
-
-
-class StorageConfig(BaseModel):
-    """Storage backend configuration.
-
-    Attributes:
-        backend_type: Type of storage backend to use.
-        redis_url: Redis connection URL for redis backend.
-        redis_cluster: Whether to use Redis cluster mode.
-        filesystem_path: Path for filesystem-based backends (NFS, Weka).
-        s3_endpoint: S3-compatible endpoint URL for MinIO.
-        s3_bucket: S3 bucket name for MinIO.
-        s3_access_key: S3 access key for authentication.
-        s3_secret_key: S3 secret key for authentication.
-        ceph_pool: Ceph pool name for Ceph backend.
-        ceph_conf: Path to Ceph configuration file.
-    """
-
-    backend_type: Literal["memory", "local_disk", "redis", "nfs", "ceph", "weka", "minio"] = Field(
-        default="memory",
-        description="Type of storage backend",
-    )
-    redis_url: str | None = Field(
-        default=None,
-        description="Redis connection URL (e.g., redis://localhost:6379)",
-    )
-    redis_cluster: bool = Field(
-        default=False,
-        description="Whether to use Redis cluster mode",
-    )
-    filesystem_path: Path | None = Field(
-        default=None,
-        description="Path for filesystem-based backends",
-    )
-    s3_endpoint: str | None = Field(
-        default=None,
-        description="S3-compatible endpoint URL",
-    )
-    s3_bucket: str | None = Field(
-        default=None,
-        description="S3 bucket name",
-    )
-    s3_access_key: str | None = Field(
-        default=None,
-        description="S3 access key",
-    )
-    s3_secret_key: str | None = Field(
-        default=None,
-        description="S3 secret key",
-    )
-    ceph_pool: str | None = Field(
-        default=None,
-        description="Ceph pool name",
-    )
-    ceph_conf: Path | None = Field(
-        default=None,
-        description="Path to Ceph configuration file",
-    )
-
-    @field_validator("filesystem_path", "ceph_conf", mode="before")
+    @field_validator("lmcache_config_file", mode="before")
     @classmethod
     def convert_path(cls, v: str | Path | None) -> Path | None:
         """Convert string path to Path object."""
@@ -130,57 +49,11 @@ class StorageConfig(BaseModel):
         return Path(v) if isinstance(v, str) else v
 
     @model_validator(mode="after")
-    def validate_backend_requirements(self) -> StorageConfig:
-        """Validate that required fields are set for each backend type."""
-        if self.backend_type == "redis" and not self.redis_url:
-            raise ValueError("redis_url is required when backend_type is 'redis'")
-        if self.backend_type in ("nfs", "weka") and not self.filesystem_path:
-            raise ValueError(
-                f"filesystem_path is required when backend_type is '{self.backend_type}'"
-            )
-        if self.backend_type == "minio":
-            if not self.s3_endpoint:
-                raise ValueError("s3_endpoint is required when backend_type is 'minio'")
-            if not self.s3_bucket:
-                raise ValueError("s3_bucket is required when backend_type is 'minio'")
-        if self.backend_type == "ceph" and not self.ceph_pool:
-            raise ValueError("ceph_pool is required when backend_type is 'ceph'")
+    def validate_config_file_exists(self) -> KVStackConfig:
+        """Fail loudly on a nonexistent LMCache config file."""
+        if self.lmcache_config_file is not None and not self.lmcache_config_file.exists():
+            raise ValueError(f"LMCache config file not found: {self.lmcache_config_file}")
         return self
-
-
-class ConnectorConfig(BaseModel):
-    """KV connector configuration for cache systems.
-
-    Attributes:
-        connector_type: Type of KV connector to use.
-        lmcache_chunk_size: Chunk size for LMCache connector.
-        lmcache_remote_url: Remote URL for LMCache server.
-        mooncake_endpoint: Endpoint for Mooncake connector.
-        dynamo_table: DynamoDB table name for Dynamo connector.
-    """
-
-    connector_type: Literal["lmcache", "mooncake", "dynamo", "mock"] = Field(
-        default="lmcache",
-        description="Type of KV connector",
-    )
-    lmcache_chunk_size: int = Field(
-        default=256,
-        ge=16,
-        le=4096,
-        description="Chunk size for LMCache (in tokens)",
-    )
-    lmcache_remote_url: str | None = Field(
-        default=None,
-        description="Remote URL for LMCache server (e.g., lm://localhost:8080)",
-    )
-    mooncake_endpoint: str | None = Field(
-        default=None,
-        description="Endpoint for Mooncake connector",
-    )
-    dynamo_table: str | None = Field(
-        default=None,
-        description="DynamoDB table name for Dynamo connector",
-    )
 
 
 class GPUEmulationConfig(BaseModel):
@@ -358,9 +231,7 @@ class KVBenchConfig(BaseModel):
 
     Attributes:
         instance_id: Unique identifier for this KV-Bench instance.
-        resources: Resource limits configuration.
-        storage: Storage backend configuration.
-        connector: KV connector configuration.
+        kv: KV management stack configuration.
         gpu: GPU emulation configuration.
         server: Server configuration.
         distributed: Distributed deployment configuration.
@@ -371,17 +242,9 @@ class KVBenchConfig(BaseModel):
         default="kvbench-0",
         description="Unique identifier for this instance",
     )
-    resources: ResourceLimits = Field(
-        default_factory=ResourceLimits,
-        description="Resource limits configuration",
-    )
-    storage: StorageConfig = Field(
-        default_factory=StorageConfig,
-        description="Storage backend configuration",
-    )
-    connector: ConnectorConfig = Field(
-        default_factory=ConnectorConfig,
-        description="KV connector configuration",
+    kv: KVStackConfig = Field(
+        default_factory=KVStackConfig,
+        description="KV management stack configuration",
     )
     gpu: GPUEmulationConfig = Field(
         default_factory=GPUEmulationConfig,

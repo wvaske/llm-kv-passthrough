@@ -8,21 +8,31 @@ from contextlib import asynccontextmanager
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import kvbench.servers.app as app_module
 from kvbench.core.config import (
     GPUEmulationConfig,
     KVBenchConfig,
     ServerConfig,
-    StorageConfig,
 )
 from kvbench.servers.app import KVBenchApp
+from tests.fakes import FakeKVStack
 
 
 @asynccontextmanager
 async def create_test_client(config: KVBenchConfig) -> AsyncGenerator[AsyncClient, None]:
-    """Create a test client with proper lifespan management."""
+    """Create a test client with proper lifespan management.
+
+    Uses the in-memory FakeKVStack; the real LMCache stack is exercised by
+    tests/integration/test_lmcache_stack.py.
+    """
     kvbench_app = KVBenchApp(config)
-    # Manually call startup
-    await kvbench_app._startup()
+    original = app_module.create_kv_stack
+    app_module.create_kv_stack = lambda _config: FakeKVStack()
+    try:
+        # Manually call startup
+        await kvbench_app._startup()
+    finally:
+        app_module.create_kv_stack = original
     try:
         transport = ASGITransport(app=kvbench_app.app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -47,7 +57,6 @@ class TestServerE2E:
                 model_profile="llama-3.1-8b",
             ),
             gpu=GPUEmulationConfig(gpu_profile="H100_SXM"),
-            storage=StorageConfig(backend_type="memory"),
         )
 
     @pytest.fixture
@@ -192,7 +201,6 @@ class TestPrefillServerE2E:
         return KVBenchConfig(
             instance_id="prefill-test",
             server=ServerConfig(server_type="prefill"),
-            storage=StorageConfig(backend_type="memory"),
         )
 
     @pytest.fixture
@@ -218,7 +226,6 @@ class TestDecodeServerE2E:
         return KVBenchConfig(
             instance_id="decode-test",
             server=ServerConfig(server_type="decode"),
-            storage=StorageConfig(backend_type="memory"),
         )
 
     @pytest.fixture

@@ -35,11 +35,12 @@ def serve(
     server_type: str | None = typer.Option(
         None, "--type", "-t", help="Server type: combined, prefill, decode, proxy"
     ),
-    storage: str | None = typer.Option(
+    lmcache_config: str | None = typer.Option(
         None,
-        "--storage",
+        "--lmcache-config",
         "-s",
-        help="Storage backend: memory, local_disk, redis, nfs, ceph, weka, minio",
+        help="Path to LMCache's own config file (storage backends, tier sizes); "
+        "LMCACHE_* env vars are used when unset",
     ),
     workers: int | None = typer.Option(None, "--workers", "-w", help="Number of worker processes"),
     config: str | None = typer.Option(
@@ -81,8 +82,8 @@ def serve(
         updates["server"] = cfg.server.model_copy(update=server_updates)
     if gpu is not None:
         updates["gpu"] = cfg.gpu.model_copy(update={"gpu_profile": gpu})
-    if storage is not None:
-        updates["storage"] = cfg.storage.model_copy(update={"backend_type": storage})
+    if lmcache_config is not None:
+        updates["kv"] = cfg.kv.model_copy(update={"lmcache_config_file": lmcache_config})
     if updates:
         # Re-validate the merged configuration (model_copy skips validators)
         cfg = KVBenchConfig.model_validate(cfg.model_copy(update=updates).model_dump(mode="json"))
@@ -90,7 +91,10 @@ def serve(
     console.print("\n[green]Configuration loaded:[/green]")
     console.print(f"  Instance ID: {cfg.instance_id}")
     console.print(f"  Server Type: {cfg.server.server_type}")
-    console.print(f"  Storage: {cfg.storage.backend_type}")
+    console.print(f"  KV Stack: {cfg.kv.stack}")
+    console.print(
+        f"  LMCache Config: {cfg.kv.lmcache_config_file or 'LMCACHE_* env / defaults'}"
+    )
     console.print(f"  Model: {cfg.server.model_profile}")
     console.print(f"  GPU: {cfg.gpu.gpu_profile}")
 

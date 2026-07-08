@@ -32,8 +32,8 @@ from kvbench.servers.openai_compat import (
 )
 
 if TYPE_CHECKING:
-    from kvbench.connectors.base import KVConnector
     from kvbench.core.config import KVBenchConfig
+    from kvbench.kv.base import KVStack
 
 logger = logging.getLogger(__name__)
 
@@ -85,31 +85,28 @@ class CombinedServer:
 
     Attributes:
         config: KV-Bench configuration.
-        connector: KV cache connector.
+        kv: KV management stack for cache operations.
         stats: Server statistics.
     """
 
     def __init__(
         self,
         config: KVBenchConfig,
-        connector: KVConnector,
+        kv: KVStack,
     ) -> None:
         """Initialize the combined server.
 
         Args:
             config: KV-Bench configuration.
-            connector: KV cache connector for cache operations.
+            kv: Started KV management stack for cache operations.
         """
         self.config = config
-        self.connector = connector
+        self.kv = kv
         self.stats = CombinedStats()
         self._running = False
 
-        chunk_size = (
-            getattr(getattr(connector, "config", None), "chunk_size", None)
-            or config.connector.lmcache_chunk_size
-        )
-        self.processor = TokenProcessor(chunk_size=chunk_size)
+        self.chunk_size = kv.chunk_size
+        self.processor = TokenProcessor(chunk_size=self.chunk_size)
         self.calculator = LatencyCalculator(
             gpu=config.gpu.gpu_profile,
             model=config.server.model_profile,
@@ -130,14 +127,6 @@ class CombinedServer:
     def _simulate_tokenize(self, text: str) -> list[int]:
         """Simulate tokenization of text (content-based, prefix-stable)."""
         return self.processor.simulate_tokenize(text)
-
-    def _chunk_tokens(self, tokens: list[int], chunk_size: int) -> list[list[int]]:
-        """Split tokens into chunks."""
-        return [tokens[i : i + chunk_size] for i in range(0, len(tokens), chunk_size)]
-
-    def _compute_chunk_hash(self, tokens: list[int], prefix_hash: str | None = None) -> str:
-        """Compute hash for a token chunk (prefix-chained)."""
-        return self.processor.compute_chunk_hash(tokens, prefix_hash=prefix_hash)
 
     def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
         """Calculate prefill latency using the roofline model."""
@@ -214,25 +203,26 @@ class CombinedServer:
         tokens = self.processor.simulate_tokenize(prompt)
         num_tokens = len(tokens)
 
-        # Chunk with prefix-chained hashes
-        chunks = self.processor.chunk_tokens_with_metadata(tokens)
+        # Ask the KV stack how much of the sequence is already cached
+        hit_tokens = await self.kv.lookup(tokens)
+        if hit_tokens:
+            # Read the cached prefix through the stack (the storage read path)
+            await self.kv.retrieve(tokens[:hit_tokens])
 
-        cache_hits = 0
-        cache_misses = 0
+        miss_tokens = num_tokens - hit_tokens
+        if miss_tokens:
+            # Simulate prefill compute for the uncached suffix, which
+            # attends to the cached prefix
+            prefill_latency = self._calculate_prefill_latency_ms(
+                miss_tokens, context_tokens=hit_tokens
+            )
+            await asyncio.sleep(prefill_latency / 1000)
 
-        for chunk in chunks:
-            if await self.connector.exists(chunk.chunk_hash):
-                cache_hits += 1
-                # Load the KV data from storage (the passthrough read path)
-                await self.connector.load(chunk.chunk_hash)
-            else:
-                cache_misses += 1
-                # Miss chunks attend to everything before them in the sequence
-                chunk_latency = self._calculate_prefill_latency_ms(
-                    chunk.size, context_tokens=chunk.start_position
-                )
-                await asyncio.sleep(chunk_latency / 1000)
-                await self.connector.store(chunk.chunk_hash, chunk.size)
+            # Store the new KV through the stack (skipping the cached prefix)
+            await self.kv.store(tokens, skip_leading=hit_tokens)
+
+        cache_hits = hit_tokens // self.chunk_size
+        cache_misses = (miss_tokens + self.chunk_size - 1) // self.chunk_size
 
         return num_tokens, cache_hits, cache_misses
 
@@ -403,9 +393,8 @@ class CombinedServer:
         logger.info(f"Combined server {self.instance_id} started")
 
     async def stop(self) -> None:
-        """Stop the server."""
+        """Stop the server (the KV stack's lifecycle is owned by the app)."""
         self._running = False
-        await self.connector.close()
         logger.info(f"Combined server {self.instance_id} stopped")
 
     def __repr__(self) -> str:

@@ -1,5 +1,14 @@
 # Storage Backends for KV Cache
 
+> **⚠️ Outdated**: This guide predates the real-LMCache integration and
+> references removed KV-Bench storage settings (`storage:`, `connector:`,
+> `KVBENCH_STORAGE_*`). Storage is now configured entirely through
+> LMCache's own application configuration — see
+> [Storage](../architecture/storage.md) and
+> [LMCache Integration](../benchmarking/lmcache.md). The infrastructure
+> steps below (installing Redis, mounting NFS, etc.) remain useful;
+> point LMCache's `remote_url`/`local_disk` at the result.
+
 KV-Bench supports multiple storage backends for characterizing storage workload patterns in LLM serving systems. This guide covers deployment and configuration for each backend.
 
 ## Overview

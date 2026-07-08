@@ -11,8 +11,8 @@ kvbench serve
 # Start with specific model and GPU profile
 kvbench serve --model llama-3.1-70b --gpu H100_SXM
 
-# Start with Redis storage
-kvbench serve --storage redis
+# Point LMCache at specific storage tiers (disk, Redis, ...)
+kvbench serve --lmcache-config lmcache.yaml
 ```
 
 ## Make API Requests

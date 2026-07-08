@@ -32,8 +32,8 @@ from kvbench.servers.openai_compat import (
 )
 
 if TYPE_CHECKING:
-    from kvbench.connectors.base import KVConnector
     from kvbench.core.config import KVBenchConfig
+    from kvbench.kv.base import KVStack
 
 logger = logging.getLogger(__name__)
 
@@ -84,31 +84,28 @@ class DecodeServer:
 
     Attributes:
         config: KV-Bench configuration.
-        connector: KV cache connector.
+        kv: KV management stack for cache operations.
         stats: Server statistics.
     """
 
     def __init__(
         self,
         config: KVBenchConfig,
-        connector: KVConnector,
+        kv: KVStack,
     ) -> None:
         """Initialize the decode server.
 
         Args:
             config: KV-Bench configuration.
-            connector: KV cache connector for loading cache entries.
+            kv: Started KV management stack for cache operations.
         """
         self.config = config
-        self.connector = connector
+        self.kv = kv
         self.stats = DecodeStats()
         self._running = False
 
-        chunk_size = (
-            getattr(getattr(connector, "config", None), "chunk_size", None)
-            or config.connector.lmcache_chunk_size
-        )
-        self.processor = TokenProcessor(chunk_size=chunk_size)
+        self.chunk_size = kv.chunk_size
+        self.processor = TokenProcessor(chunk_size=self.chunk_size)
         self.calculator = LatencyCalculator(
             gpu=config.gpu.gpu_profile,
             model=config.server.model_profile,
@@ -142,7 +139,7 @@ class DecodeServer:
         return self.calculator.decode_latency(context_length).total_ms
 
     async def _load_context_kv(self, prompt: str) -> tuple[int, int, int]:
-        """Load the prompt's KV chunks from the cache (the decode read path).
+        """Load the prompt's KV cache through the KV stack (decode read path).
 
         In a disaggregated deployment the decode server must fetch the KV
         cache produced by the prefill server from shared storage before it
@@ -150,7 +147,7 @@ class DecodeServer:
         shows up in TTFT.
 
         Args:
-            prompt: The prompt text to derive chunk hashes from.
+            prompt: The prompt text to tokenize and look up.
 
         Returns:
             Tuple of (context_length_tokens, chunks_loaded, chunks_missing).
@@ -159,16 +156,13 @@ class DecodeServer:
             return 0, 0, 0
 
         tokens = self.processor.simulate_tokenize(prompt)
-        chunks = self.processor.chunk_tokens_with_metadata(tokens)
 
-        loaded = 0
-        missing = 0
-        for chunk in chunks:
-            data = await self.connector.load(chunk.chunk_hash)
-            if data is not None:
-                loaded += 1
-            else:
-                missing += 1
+        hit_tokens = await self.kv.lookup(tokens)
+        if hit_tokens:
+            await self.kv.retrieve(tokens[:hit_tokens])
+
+        loaded = hit_tokens // self.chunk_size
+        missing = (len(tokens) - hit_tokens + self.chunk_size - 1) // self.chunk_size
 
         return len(tokens), loaded, missing
 
@@ -444,9 +438,8 @@ class DecodeServer:
         logger.info(f"Decode server {self.instance_id} started")
 
     async def stop(self) -> None:
-        """Stop the server."""
+        """Stop the server (the KV stack's lifecycle is owned by the app)."""
         self._running = False
-        await self.connector.close()
         logger.info(f"Decode server {self.instance_id} stopped")
 
     def __repr__(self) -> str:

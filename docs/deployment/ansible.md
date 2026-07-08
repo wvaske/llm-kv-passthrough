@@ -1,5 +1,14 @@
 # Ansible Deployment
 
+> **⚠️ Outdated**: This guide predates the real-LMCache integration and
+> references removed KV-Bench storage settings (`storage:`, `connector:`,
+> `KVBENCH_STORAGE_*`). Storage is now configured entirely through
+> LMCache's own application configuration — see
+> [Storage](../architecture/storage.md) and
+> [LMCache Integration](../benchmarking/lmcache.md). The infrastructure
+> steps below (installing Redis, mounting NFS, etc.) remain useful;
+> point LMCache's `remote_url`/`local_disk` at the result.
+
 KV-Bench provides Ansible playbooks for automated deployment across multiple servers.
 
 ## Prerequisites

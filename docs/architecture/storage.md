@@ -1,222 +1,63 @@
-# Storage Backends
+# Storage
 
-KV-Bench supports multiple storage backends for KV cache persistence. Choose based on your deployment requirements.
+**KV-Bench never performs storage I/O itself.** The storage under test sits
+under the KV management stack — exactly where it sits in a real vLLM +
+LMCache deployment. All KV cache operations (lookup, store, retrieve) go
+through the real LMCache engine, and LMCache owns the entire storage
+control plane: token chunking, prefix hashing, tier placement, spilling,
+eviction, serialization, and every byte written to or read from storage.
 
-## Backend Comparison
+```
+Mock inference servers (prefill / decode / combined)
+        │  token sequences + mock GPU-side KV tensors
+        ▼
+LMCache engine (real library, CPU-only capable)
+        │  chunking · hashing · tiering · eviction
+        ▼
+Storage under test
+  CPU RAM tier → local disk tier → remote backend (Redis, Mooncake, ...)
+```
 
-| Backend | Latency | Throughput | Scalability | Persistence | Best For |
-|---------|---------|------------|-------------|-------------|----------|
-| Memory | ~1μs | Very High | Single Node | No | Testing |
-| Local Disk | ~100μs | High | Single Node | Yes | Single-node |
-| Redis | ~1ms | High | Multi-node | Optional | Shared cache |
-| S3 | ~50ms | Medium | Unlimited | Yes | Cloud |
-| NFS | ~5ms | Medium | Multi-node | Yes | On-premise |
-| Weka | ~1ms | Very High | Multi-node | Yes | HPC |
-| Mooncake | ~100μs | Very High | Multi-node | No | Disaggregated |
+## Why this design
 
-## Memory Backend
+Benchmarking storage for LLM inference is only meaningful if the I/O
+pattern matches what the KV management stack actually produces: LMCache's
+chunk sizes, its key format, its tiering and spill decisions, its
+serialization. Reimplementing storage backends inside the benchmark would
+measure the benchmark's own I/O, not LMCache's. So KV-Bench has no storage
+backends of its own — anything LMCache supports, KV-Bench benchmarks.
 
-In-memory storage with LRU eviction. Fastest option but no persistence.
+## Configuring storage
+
+Storage is configured **through LMCache's own application configuration**,
+not through KV-Bench settings:
 
 ```yaml
-storage:
-  backend_type: memory
-  # Maximum memory usage
-  max_size_bytes: 10737418240  # 10 GB
+# lmcache.yaml — passed to `kvbench serve --lmcache-config lmcache.yaml`
+chunk_size: 256
+
+# Tier 1: CPU memory
+local_cpu: true
+max_local_cpu_size: 4.0        # GB
+
+# Tier 2: local disk (NVMe under test)
+local_disk: "file:///var/lib/lmcache/"
+max_local_disk_size: 100.0     # GB
+
+# Tier 3: remote backend (shared across prefill/decode fleets)
+# remote_url: "redis://cache-host:6379"
+# remote_serde: "naive"
 ```
 
-```bash
-kvbench serve --storage memory
-```
+Alternatively, set LMCache's `LMCACHE_*` environment variables and omit
+the file. See the [LMCache documentation](https://docs.lmcache.ai/) for
+the full option set — every option applies unmodified.
 
-**Features:**
-- LRU eviction when capacity exceeded
-- Thread-safe operations
-- Zero serialization overhead
+## Sizing and authenticity
 
-## Local Disk Backend
-
-NVMe-optimized local storage with memory-mapped files.
-
-```yaml
-storage:
-  backend_type: local_disk
-  local_disk_path: /var/lib/kvbench/cache
-  local_disk_max_size_gb: 100.0
-```
-
-```bash
-export KVBENCH_STORAGE__LOCAL_DISK_PATH=/nvme/kvbench
-kvbench serve --storage local_disk
-```
-
-**Features:**
-- Memory-mapped I/O for performance
-- Automatic cleanup on capacity limits
-- Persistent across restarts
-
-## Redis Backend
-
-Distributed caching with Redis or Redis Cluster.
-
-```yaml
-storage:
-  backend_type: redis
-  redis_url: redis://localhost:6379
-  redis_cluster: false
-  redis_prefix: kvbench
-  redis_ttl: 3600  # 1 hour
-```
-
-```bash
-# Single Redis
-export KVBENCH_STORAGE__REDIS_URL=redis://redis:6379
-kvbench serve --storage redis
-
-# Redis Cluster
-export KVBENCH_STORAGE__REDIS_URL=redis://redis-1:6379,redis-2:6379,redis-3:6379
-export KVBENCH_STORAGE__REDIS_CLUSTER=true
-kvbench serve --storage redis
-```
-
-**Features:**
-- Shared cache across multiple servers
-- Optional TTL for automatic expiration
-- Cluster mode for horizontal scaling
-
-## S3 Backend
-
-Object storage compatible with S3, MinIO, and other S3-compatible services.
-
-```yaml
-storage:
-  backend_type: s3
-  s3_endpoint: https://s3.amazonaws.com
-  s3_bucket: kvbench-cache
-  s3_prefix: kv-cache/
-  s3_region: us-east-1
-```
-
-```bash
-# AWS S3
-export AWS_ACCESS_KEY_ID=your-key
-export AWS_SECRET_ACCESS_KEY=your-secret
-export KVBENCH_STORAGE__S3_BUCKET=kvbench-cache
-kvbench serve --storage s3
-
-# MinIO
-export KVBENCH_STORAGE__S3_ENDPOINT=http://minio:9000
-export KVBENCH_STORAGE__S3_BUCKET=kvbench
-export AWS_ACCESS_KEY_ID=minio
-export AWS_SECRET_ACCESS_KEY=minio123
-kvbench serve --storage s3
-```
-
-**Features:**
-- Unlimited capacity
-- Multi-region support
-- Cost-effective for large caches
-
-## NFS Backend
-
-Network filesystem for shared storage across nodes.
-
-```yaml
-storage:
-  backend_type: nfs
-  filesystem_path: /mnt/nfs/kvbench
-```
-
-```bash
-# Mount NFS first
-mount -t nfs nfs-server:/exports/kvbench /mnt/nfs/kvbench
-
-export KVBENCH_STORAGE__FILESYSTEM_PATH=/mnt/nfs/kvbench
-kvbench serve --storage nfs
-```
-
-**Features:**
-- Shared across all nodes
-- POSIX filesystem semantics
-- Works with existing NFS infrastructure
-
-## Weka Backend
-
-High-performance distributed filesystem optimized for AI workloads.
-
-```yaml
-storage:
-  backend_type: weka
-  filesystem_path: /mnt/weka/kvbench
-  weka_mount_point: /mnt/weka
-```
-
-```bash
-export KVBENCH_STORAGE__FILESYSTEM_PATH=/mnt/weka/kvbench
-kvbench serve --storage weka
-```
-
-**Features:**
-- Sub-millisecond latency
-- Parallel I/O support
-- Optimized for GPU workloads
-
-## Mooncake Backend
-
-Integration with Mooncake transfer engine for disaggregated inference.
-
-```yaml
-storage:
-  backend_type: mooncake
-  mooncake_local_hostname: node-1
-  mooncake_metadata_server: etcd://etcd:2379
-  mooncake_protocol: rdma  # or tcp
-```
-
-```bash
-export KVBENCH_STORAGE__MOONCAKE_LOCAL_HOSTNAME=$(hostname)
-export KVBENCH_STORAGE__MOONCAKE_METADATA_SERVER=etcd://etcd:2379
-kvbench serve --storage mooncake
-```
-
-**Features:**
-- Zero-copy transfers
-- RDMA support for ultra-low latency
-- Designed for disaggregated serving
-
-## Tiered Storage
-
-Combine multiple backends for tiered caching:
-
-```yaml
-storage:
-  backend_type: tiered
-  tiered_backends:
-    - type: memory
-      max_size_bytes: 1073741824  # 1 GB hot tier
-    - type: local_disk
-      path: /nvme/cache  # 100 GB warm tier
-    - type: s3
-      bucket: kvbench-cold  # Unlimited cold tier
-```
-
-## Performance Tuning
-
-### Memory Backend
-- Increase `max_size_bytes` for better hit rates
-- Monitor eviction rate via metrics
-
-### Redis Backend
-- Use Redis Cluster for >100GB caches
-- Enable persistence only if needed
-- Tune `maxmemory-policy` to `allkeys-lru`
-
-### S3 Backend
-- Use local SSD cache for frequently accessed keys
-- Enable multipart uploads for large objects
-- Use regional endpoints for lower latency
-
-### Filesystem Backends
-- Use NVMe SSDs for local disk
-- Mount NFS/Weka with `noatime` option
-- Ensure sufficient I/O threads
+KV tensor sizes are derived from the emulated model profile (layers, KV
+heads, head dimension, dtype), so the number of bytes flowing into LMCache
+per token matches the real model. The GPU side is mocked with CPU tensors
+via LMCache's `GPUConnectorInterface`; everything downstream of that
+interface is unmodified LMCache code, including the on-disk key format
+(`<model>@<world_size>@<worker_id>@<hash>`).
