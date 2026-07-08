@@ -18,6 +18,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from kvbench.core.latency import LatencyCalculator
+from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -53,6 +55,8 @@ class DecodeStats:
     requests_success: int = 0
     requests_failed: int = 0
     tokens_generated: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
     total_latency_ms: float = 0.0
     start_time: float = field(default_factory=time.time)
 
@@ -100,6 +104,18 @@ class DecodeServer:
         self.stats = DecodeStats()
         self._running = False
 
+        chunk_size = (
+            getattr(getattr(connector, "config", None), "chunk_size", None)
+            or config.connector.lmcache_chunk_size
+        )
+        self.processor = TokenProcessor(chunk_size=chunk_size)
+        self.calculator = LatencyCalculator(
+            gpu=config.gpu.gpu_profile,
+            model=config.server.model_profile,
+            tp_size=config.gpu.tp_size,
+            efficiency=config.gpu.efficiency_factor,
+        )
+
     @property
     def model_name(self) -> str:
         """Get the model name."""
@@ -113,8 +129,9 @@ class DecodeServer:
     def _calculate_decode_latency_ms(self, context_length: int) -> float:
         """Calculate simulated decode latency per token.
 
-        Decode is memory-bound. Latency depends on loading model
-        weights and KV cache from memory.
+        Decode is memory-bound: each token requires loading the model
+        weights and the KV cache for the entire context, so the roofline
+        model's memory path dominates.
 
         Args:
             context_length: Current context length (affects KV cache size).
@@ -122,21 +139,38 @@ class DecodeServer:
         Returns:
             Estimated decode latency per token in milliseconds.
         """
-        efficiency = self.config.gpu.efficiency_factor
-        tp_size = self.config.gpu.tp_size
+        return self.calculator.decode_latency(context_length).total_ms
 
-        # Base decode latency: ~5-10ms per token for large models
-        # This is a simplified model based on memory bandwidth
-        base_latency = 8.0 / efficiency
+    async def _load_context_kv(self, prompt: str) -> tuple[int, int, int]:
+        """Load the prompt's KV chunks from the cache (the decode read path).
 
-        # Scale with tensor parallelism
-        scaled_latency = base_latency / tp_size
+        In a disaggregated deployment the decode server must fetch the KV
+        cache produced by the prefill server from shared storage before it
+        can generate. This exercises the storage read path so its latency
+        shows up in TTFT.
 
-        # Longer contexts have larger KV cache to load
-        # Add ~0.01ms per 1000 context tokens
-        context_penalty = (context_length / 1000) * 0.01
+        Args:
+            prompt: The prompt text to derive chunk hashes from.
 
-        return scaled_latency + context_penalty
+        Returns:
+            Tuple of (context_length_tokens, chunks_loaded, chunks_missing).
+        """
+        if not prompt:
+            return 0, 0, 0
+
+        tokens = self.processor.simulate_tokenize(prompt)
+        chunks = self.processor.chunk_tokens_with_metadata(tokens)
+
+        loaded = 0
+        missing = 0
+        for chunk in chunks:
+            data = await self.connector.load(chunk.chunk_hash)
+            if data is not None:
+                loaded += 1
+            else:
+                missing += 1
+
+        return len(tokens), loaded, missing
 
     def _generate_mock_token(self, position: int) -> str:
         """Generate a mock token for testing.
@@ -149,15 +183,58 @@ class DecodeServer:
         """
         # Generate realistic-looking mock tokens
         mock_tokens = [
-            " The", " answer", " to", " your", " question", " is",
-            " that", " we", " need", " to", " consider", " multiple",
-            " factors", " when", " making", " this", " decision", ".",
-            " First", ",", " let", " me", " explain", " the",
-            " key", " points", " that", " are", " relevant", " here",
-            ".", " Based", " on", " the", " information", " provided",
-            ",", " I", " would", " recommend", " the", " following",
-            " approach", ":", " carefully", " analyze", " the",
-            " situation", " and", " then", " proceed", ".",
+            " The",
+            " answer",
+            " to",
+            " your",
+            " question",
+            " is",
+            " that",
+            " we",
+            " need",
+            " to",
+            " consider",
+            " multiple",
+            " factors",
+            " when",
+            " making",
+            " this",
+            " decision",
+            ".",
+            " First",
+            ",",
+            " let",
+            " me",
+            " explain",
+            " the",
+            " key",
+            " points",
+            " that",
+            " are",
+            " relevant",
+            " here",
+            ".",
+            " Based",
+            " on",
+            " the",
+            " information",
+            " provided",
+            ",",
+            " I",
+            " would",
+            " recommend",
+            " the",
+            " following",
+            " approach",
+            ":",
+            " carefully",
+            " analyze",
+            " the",
+            " situation",
+            " and",
+            " then",
+            " proceed",
+            ".",
         ]
         return mock_tokens[position % len(mock_tokens)]
 
@@ -202,8 +279,19 @@ class DecodeServer:
         Yields:
             SSE-formatted chunks.
         """
+        self.stats.requests_total += 1
         max_tokens = request.max_tokens or 100
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        start_time = time.time()
+
+        # Load the prompt's KV chunks from the cache (decode read path);
+        # prefer the tokenized prompt length as the context length
+        prompt = request.prompt_text or ""
+        if prompt:
+            prompt_tokens, loaded, missing = await self._load_context_kv(prompt)
+            self.stats.cache_hits += loaded
+            self.stats.cache_misses += missing
+            context_length = max(context_length, prompt_tokens)
 
         # Send initial chunk with role
         start_chunk = ChatCompletionChunk.create_start(
@@ -214,11 +302,9 @@ class DecodeServer:
 
         # Generate tokens
         tokens_generated = 0
-        total_latency = 0.0
 
-        async for token, latency_ms in self.generate_tokens(context_length, max_tokens):
+        async for token, _latency_ms in self.generate_tokens(context_length, max_tokens):
             tokens_generated += 1
-            total_latency += latency_ms
 
             # Send content chunk
             content_chunk = ChatCompletionChunk.create_content(
@@ -239,9 +325,10 @@ class DecodeServer:
         # Send [DONE]
         yield "data: [DONE]\n\n"
 
-        # Update stats
+        # Update stats (wall-clock, including KV loading)
         self.stats.tokens_generated += tokens_generated
-        self.stats.total_latency_ms += total_latency
+        self.stats.total_latency_ms += (time.time() - start_time) * 1000
+        self.stats.requests_success += 1
 
     async def chat_completions(
         self,
@@ -262,6 +349,15 @@ class DecodeServer:
 
         try:
             max_tokens = request.max_tokens or 100
+
+            # Load the prompt's KV chunks from the cache (decode read path);
+            # prefer the tokenized prompt length as the context length
+            prompt = request.prompt_text or ""
+            if prompt:
+                prompt_tokens, loaded, missing = await self._load_context_kv(prompt)
+                self.stats.cache_hits += loaded
+                self.stats.cache_misses += missing
+                context_length = max(context_length, prompt_tokens)
 
             # Generate all tokens
             generated_text = ""
@@ -337,8 +433,8 @@ class DecodeServer:
             requests_success=self.stats.requests_success,
             requests_failed=self.stats.requests_failed,
             tokens_processed=self.stats.tokens_generated,
-            cache_hits=0,  # Decode doesn't track cache hits directly
-            cache_misses=0,
+            cache_hits=self.stats.cache_hits,
+            cache_misses=self.stats.cache_misses,
             avg_latency_ms=self.stats.avg_latency_ms,
         )
 

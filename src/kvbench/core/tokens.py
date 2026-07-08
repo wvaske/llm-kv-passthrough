@@ -31,17 +31,12 @@ class TokenChunk:
     chunk_index: int
     chunk_hash: str
     start_position: int
+    is_full: bool = True
 
     @property
     def size(self) -> int:
         """Return the number of tokens in this chunk."""
         return len(self.tokens)
-
-    @property
-    def is_full(self) -> bool:
-        """Check if this is a full-size chunk (not a partial final chunk)."""
-        # This is set by the TokenProcessor based on chunk_size
-        return True  # Will be overridden by processor
 
 
 class TokenProcessor:
@@ -75,10 +70,18 @@ class TokenProcessor:
         """Simulate tokenization by generating pseudo-random token IDs.
 
         This method simulates tokenization without using a real tokenizer.
-        It generates deterministic token IDs based on the input text content.
+        Each token ID is derived from a hash of its own character granule,
+        which gives two properties real tokenizers have and that prefix
+        caching depends on:
 
-        The number of tokens is estimated based on the character-to-token ratio,
-        which is approximately 4 characters per token for English text.
+        - Content-based: different text produces different token streams.
+        - Prefix-stable: two texts sharing a prefix produce token streams
+          sharing a prefix, so shared prompt prefixes hit the same cache
+          chunks.
+
+        The number of tokens is estimated based on the character-to-token
+        ratio, which is approximately 4 characters per token for English text.
+        Total work is O(len(text)).
 
         Args:
             text: Input text to tokenize.
@@ -90,17 +93,13 @@ class TokenProcessor:
         if not text:
             return []
 
-        # Estimate number of tokens
-        num_tokens = max(1, int(len(text) / chars_per_token))
-
-        # Generate deterministic token IDs based on text content
-        tokens = []
+        granule = max(1, round(chars_per_token))
         text_bytes = text.encode("utf-8")
 
-        for i in range(num_tokens):
-            # Create a hash combining the text and position
-            hash_input = text_bytes + i.to_bytes(4, "little")
-            hash_digest = hashlib.sha256(hash_input).digest()
+        tokens = []
+        for i in range(0, len(text_bytes), granule):
+            piece = text_bytes[i : i + granule]
+            hash_digest = hashlib.sha256(piece).digest()
             # Use first 4 bytes as token ID (mod vocab size, using 128K as default)
             token_id = int.from_bytes(hash_digest[:4], "little") % 128256
             tokens.append(token_id)
@@ -129,6 +128,12 @@ class TokenProcessor:
     def chunk_tokens_with_metadata(self, tokens: list[int]) -> list[TokenChunk]:
         """Divide tokens into chunks with full metadata.
 
+        Chunk hashes are prefix-chained (as in vLLM/LMCache block hashing):
+        each chunk's hash incorporates the previous chunk's hash, so an
+        identical chunk of tokens appearing after a *different* prefix gets a
+        different hash. This prevents false cache hits on KV state that was
+        computed under a different context.
+
         Args:
             tokens: List of token IDs.
 
@@ -139,38 +144,46 @@ class TokenProcessor:
             return []
 
         chunks = []
+        parent_hash: str | None = None
         for i, start in enumerate(range(0, len(tokens), self.chunk_size)):
             chunk_tokens = tokens[start : start + self.chunk_size]
-            chunk_hash = self.compute_chunk_hash(chunk_tokens)
+            chunk_hash = self.compute_chunk_hash(chunk_tokens, prefix_hash=parent_hash)
 
             chunk = TokenChunk(
                 tokens=chunk_tokens,
                 chunk_index=i,
                 chunk_hash=chunk_hash,
                 start_position=start,
+                is_full=len(chunk_tokens) == self.chunk_size,
             )
             chunks.append(chunk)
+            parent_hash = chunk_hash
 
         return chunks
 
-    def compute_chunk_hash(self, tokens: list[int]) -> str:
+    def compute_chunk_hash(self, tokens: list[int], prefix_hash: str | None = None) -> str:
         """Compute SHA-256 hash of a token chunk.
 
         The hash is computed from the byte representation of the token IDs,
-        providing a content-addressable identifier for the chunk.
+        optionally chained to the hash of the preceding chunk, providing a
+        context-dependent content-addressable identifier.
 
         Args:
             tokens: List of token IDs.
+            prefix_hash: Hash of the preceding chunk in the sequence, or None
+                for the first chunk. Chaining makes the hash depend on the
+                full prefix, matching vLLM/LMCache block-hash semantics.
 
         Returns:
             Hexadecimal SHA-256 hash string.
         """
-        if not tokens:
-            return hashlib.sha256(b"").hexdigest()
-
+        hasher = hashlib.sha256()
+        if prefix_hash is not None:
+            hasher.update(prefix_hash.encode("ascii"))
         # Convert tokens to bytes (4 bytes per token, little-endian)
-        token_bytes = b"".join(t.to_bytes(4, "little") for t in tokens)
-        return hashlib.sha256(token_bytes).hexdigest()
+        for t in tokens:
+            hasher.update(t.to_bytes(4, "little"))
+        return hasher.hexdigest()
 
     def find_prefix_match(
         self, tokens: list[int], cached_hashes: set[str]

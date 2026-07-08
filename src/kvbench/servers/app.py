@@ -55,7 +55,9 @@ class KVBenchApp:
             config: KV-Bench configuration. Uses defaults if not provided.
         """
         self.config = config or KVBenchConfig()
-        self._server: PrefillServer | DecodeServer | CombinedServer | DisaggregatedProxy | None = None
+        self._server: PrefillServer | DecodeServer | CombinedServer | DisaggregatedProxy | None = (
+            None
+        )
         self._storage = None
         self._connector = None
 
@@ -97,7 +99,9 @@ class KVBenchApp:
         self._server = create_server(self.config, self._connector)
         await self._server.start()
 
-        logger.info(f"KV-Bench server started on {self.config.server.host}:{self.config.server.port}")
+        logger.info(
+            f"KV-Bench server started on {self.config.server.host}:{self.config.server.port}"
+        )
 
     async def _shutdown(self) -> None:
         """Cleanup server components on shutdown."""
@@ -178,17 +182,13 @@ class KVBenchApp:
             return result
 
         @self.app.exception_handler(Exception)
-        async def global_exception_handler(
-            _request: Request, exc: Exception
-        ) -> JSONResponse:
+        async def global_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
             """Handle uncaught exceptions."""
             logger.exception(f"Unhandled exception: {exc}")
             error = ErrorResponse.create(str(exc), "server_error")
             return JSONResponse(status_code=500, content=error.model_dump())
 
-    async def _stream_response(
-        self, request: ChatCompletionRequest
-    ) -> AsyncGenerator[str, None]:
+    async def _stream_response(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
         """Generate streaming response."""
         if self._server is None:
             yield ErrorResponse.create("Server not initialized", "server_error").model_dump_json()
@@ -224,6 +224,29 @@ def create_app(config: KVBenchConfig | None = None) -> FastAPI:
     return kvbench_app.app
 
 
+def load_config() -> KVBenchConfig:
+    """Load the server configuration from the environment.
+
+    Resolution order:
+    1. If KVBENCH_CONFIG_FILE is set, load that YAML file (this is how the
+       `kvbench serve` CLI passes its fully-resolved configuration through
+       to uvicorn worker processes).
+    2. Otherwise, build the configuration from KVBENCH_* environment
+       variables (the path used by Docker/compose deployments running
+       uvicorn directly).
+
+    Returns:
+        The resolved KVBenchConfig.
+    """
+    import os
+
+    config_file = os.environ.get("KVBENCH_CONFIG_FILE")
+    if config_file:
+        logger.info(f"Loading configuration from {config_file}")
+        return KVBenchConfig.from_yaml(config_file)
+    return KVBenchConfig.from_env()
+
+
 # Lazy app instance for uvicorn
 # Created on first access to avoid import-time initialization
 _app: FastAPI | None = None
@@ -232,15 +255,17 @@ _app: FastAPI | None = None
 def get_app() -> FastAPI:
     """Get or create the default FastAPI application.
 
-    This function lazily creates the app on first access,
-    avoiding import-time initialization issues.
+    This function lazily creates the app on first access, avoiding
+    import-time initialization issues. The configuration is resolved via
+    load_config(), so KVBENCH_CONFIG_FILE and KVBENCH_* environment
+    variables are honored.
     """
     global _app
     if _app is None:
-        _app = create_app()
+        _app = create_app(load_config())
     return _app
 
 
-# For uvicorn: kvbench.servers.app:app
-# We need a callable or the app instance
+# For uvicorn (factory): uvicorn kvbench.servers.app:app --factory
+# or programmatically: uvicorn.run("kvbench.servers.app:get_app", factory=True)
 app = get_app

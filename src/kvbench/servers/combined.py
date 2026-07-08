@@ -11,7 +11,6 @@ The server provides a complete OpenAI-compatible API with streaming support.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 import uuid
@@ -19,6 +18,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from kvbench.core.latency import LatencyCalculator
+from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -104,6 +105,18 @@ class CombinedServer:
         self.stats = CombinedStats()
         self._running = False
 
+        chunk_size = (
+            getattr(getattr(connector, "config", None), "chunk_size", None)
+            or config.connector.lmcache_chunk_size
+        )
+        self.processor = TokenProcessor(chunk_size=chunk_size)
+        self.calculator = LatencyCalculator(
+            gpu=config.gpu.gpu_profile,
+            model=config.server.model_profile,
+            tp_size=config.gpu.tp_size,
+            efficiency=config.gpu.efficiency_factor,
+        )
+
     @property
     def model_name(self) -> str:
         """Get the model name."""
@@ -115,51 +128,80 @@ class CombinedServer:
         return self.config.instance_id
 
     def _simulate_tokenize(self, text: str) -> list[int]:
-        """Simulate tokenization of text."""
-        num_tokens = max(1, len(text) // 4)
-        return list(range(num_tokens))
+        """Simulate tokenization of text (content-based, prefix-stable)."""
+        return self.processor.simulate_tokenize(text)
 
     def _chunk_tokens(self, tokens: list[int], chunk_size: int) -> list[list[int]]:
         """Split tokens into chunks."""
-        chunks = []
-        for i in range(0, len(tokens), chunk_size):
-            chunks.append(tokens[i : i + chunk_size])
-        return chunks
+        return [tokens[i : i + chunk_size] for i in range(0, len(tokens), chunk_size)]
 
-    def _compute_chunk_hash(self, tokens: list[int]) -> str:
-        """Compute hash for a token chunk."""
-        data = ",".join(str(t) for t in tokens).encode()
-        return hashlib.sha256(data).hexdigest()
+    def _compute_chunk_hash(self, tokens: list[int], prefix_hash: str | None = None) -> str:
+        """Compute hash for a token chunk (prefix-chained)."""
+        return self.processor.compute_chunk_hash(tokens, prefix_hash=prefix_hash)
 
-    def _calculate_prefill_latency_ms(self, num_tokens: int) -> float:
-        """Calculate prefill latency."""
-        efficiency = self.config.gpu.efficiency_factor
-        tp_size = self.config.gpu.tp_size
-        base_latency_per_token = 0.1 / efficiency
-        scaled_latency = base_latency_per_token / tp_size
-        return scaled_latency * num_tokens
+    def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
+        """Calculate prefill latency using the roofline model."""
+        return self.calculator.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
 
     def _calculate_decode_latency_ms(self, context_length: int) -> float:
-        """Calculate decode latency per token."""
-        efficiency = self.config.gpu.efficiency_factor
-        tp_size = self.config.gpu.tp_size
-        base_latency = 8.0 / efficiency
-        scaled_latency = base_latency / tp_size
-        context_penalty = (context_length / 1000) * 0.01
-        return scaled_latency + context_penalty
+        """Calculate decode latency per token using the roofline model."""
+        return self.calculator.decode_latency(context_length).total_ms
 
     def _generate_mock_token(self, position: int) -> str:
         """Generate a mock token."""
         mock_tokens = [
-            " The", " answer", " to", " your", " question", " is",
-            " that", " we", " need", " to", " consider", " multiple",
-            " factors", " when", " making", " this", " decision", ".",
-            " First", ",", " let", " me", " explain", " the",
-            " key", " points", " that", " are", " relevant", " here",
-            ".", " Based", " on", " the", " information", " provided",
-            ",", " I", " would", " recommend", " the", " following",
-            " approach", ":", " carefully", " analyze", " the",
-            " situation", " and", " then", " proceed", ".",
+            " The",
+            " answer",
+            " to",
+            " your",
+            " question",
+            " is",
+            " that",
+            " we",
+            " need",
+            " to",
+            " consider",
+            " multiple",
+            " factors",
+            " when",
+            " making",
+            " this",
+            " decision",
+            ".",
+            " First",
+            ",",
+            " let",
+            " me",
+            " explain",
+            " the",
+            " key",
+            " points",
+            " that",
+            " are",
+            " relevant",
+            " here",
+            ".",
+            " Based",
+            " on",
+            " the",
+            " information",
+            " provided",
+            ",",
+            " I",
+            " would",
+            " recommend",
+            " the",
+            " following",
+            " approach",
+            ":",
+            " carefully",
+            " analyze",
+            " the",
+            " situation",
+            " and",
+            " then",
+            " proceed",
+            ".",
         ]
         return mock_tokens[position % len(mock_tokens)]
 
@@ -169,28 +211,28 @@ class CombinedServer:
         Returns:
             Tuple of (num_tokens, cache_hits, cache_misses).
         """
-        tokens = self._simulate_tokenize(prompt)
+        tokens = self.processor.simulate_tokenize(prompt)
         num_tokens = len(tokens)
 
-        chunk_size = 256
-        if hasattr(self.connector, "config"):
-            chunk_size = getattr(self.connector.config, "chunk_size", 256)
-
-        chunks = self._chunk_tokens(tokens, chunk_size)
+        # Chunk with prefix-chained hashes
+        chunks = self.processor.chunk_tokens_with_metadata(tokens)
 
         cache_hits = 0
         cache_misses = 0
 
         for chunk in chunks:
-            chunk_hash = self._compute_chunk_hash(chunk)
-
-            if await self.connector.exists(chunk_hash):
+            if await self.connector.exists(chunk.chunk_hash):
                 cache_hits += 1
+                # Load the KV data from storage (the passthrough read path)
+                await self.connector.load(chunk.chunk_hash)
             else:
                 cache_misses += 1
-                chunk_latency = self._calculate_prefill_latency_ms(len(chunk))
+                # Miss chunks attend to everything before them in the sequence
+                chunk_latency = self._calculate_prefill_latency_ms(
+                    chunk.size, context_tokens=chunk.start_position
+                )
                 await asyncio.sleep(chunk_latency / 1000)
-                await self.connector.store(chunk_hash, len(chunk))
+                await self.connector.store(chunk.chunk_hash, chunk.size)
 
         return num_tokens, cache_hits, cache_misses
 

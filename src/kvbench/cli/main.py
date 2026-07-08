@@ -28,44 +28,64 @@ console = Console()
 
 @app.command()
 def serve(
-    host: str = typer.Option("0.0.0.0", "--host", "-h", help="Host to bind to"),
-    port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
-    model: str = typer.Option("llama-3.1-8b", "--model", "-m", help="Model profile to emulate"),
-    gpu: str = typer.Option("H100_SXM", "--gpu", "-g", help="GPU profile to emulate"),
-    server_type: str = typer.Option("combined", "--type", "-t", help="Server type: combined, prefill, decode, proxy"),
-    storage: str = typer.Option("memory", "--storage", "-s", help="Storage backend: memory, local_disk, redis"),
-    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
-    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    host: str | None = typer.Option(None, "--host", "-h", help="Host to bind to"),
+    port: int | None = typer.Option(None, "--port", "-p", help="Port to listen on"),
+    model: str | None = typer.Option(None, "--model", "-m", help="Model profile to emulate"),
+    gpu: str | None = typer.Option(None, "--gpu", "-g", help="GPU profile to emulate"),
+    server_type: str | None = typer.Option(
+        None, "--type", "-t", help="Server type: combined, prefill, decode, proxy"
+    ),
+    storage: str | None = typer.Option(
+        None,
+        "--storage",
+        "-s",
+        help="Storage backend: memory, local_disk, redis, nfs, ceph, weka, minio",
+    ),
+    workers: int | None = typer.Option(None, "--workers", "-w", help="Number of worker processes"),
+    config: str | None = typer.Option(
+        None, "--config", "-c", help="Path to config file (explicit CLI flags override it)"
+    ),
     reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload for development"),
 ) -> None:
-    """Start the KV-Bench server."""
+    """Start the KV-Bench server.
+
+    Configuration precedence: explicit CLI flags > --config file >
+    KVBENCH_* environment variables > defaults.
+    """
     import os
+    import tempfile
 
     console.print("[bold blue]KV-Bench Server[/bold blue]")
-    console.print(f"Host: {host}")
-    console.print(f"Port: {port}")
-    console.print(f"Model: {model}")
-    console.print(f"GPU: {gpu}")
-    console.print(f"Server Type: {server_type}")
-    console.print(f"Storage: {storage}")
 
+    # Base configuration: --config file, else environment, else defaults
     if config:
         console.print(f"Config: {config}")
         cfg = KVBenchConfig.from_yaml(config)
     else:
-        from kvbench.core.config import GPUEmulationConfig, ServerConfig, StorageConfig
+        cfg = KVBenchConfig.from_env()
 
-        cfg = KVBenchConfig(
-            server=ServerConfig(
-                host=host,
-                port=port,
-                model_profile=model,
-                server_type=server_type,  # type: ignore[arg-type]
-                workers=workers,
-            ),
-            gpu=GPUEmulationConfig(gpu_profile=gpu),
-            storage=StorageConfig(backend_type=storage),  # type: ignore[arg-type]
-        )
+    # Overlay explicit CLI flags onto the base configuration
+    updates: dict = {}
+    server_updates = {
+        key: value
+        for key, value in {
+            "host": host,
+            "port": port,
+            "model_profile": model,
+            "server_type": server_type,
+            "workers": workers,
+        }.items()
+        if value is not None
+    }
+    if server_updates:
+        updates["server"] = cfg.server.model_copy(update=server_updates)
+    if gpu is not None:
+        updates["gpu"] = cfg.gpu.model_copy(update={"gpu_profile": gpu})
+    if storage is not None:
+        updates["storage"] = cfg.storage.model_copy(update={"backend_type": storage})
+    if updates:
+        # Re-validate the merged configuration (model_copy skips validators)
+        cfg = KVBenchConfig.model_validate(cfg.model_copy(update=updates).model_dump(mode="json"))
 
     console.print("\n[green]Configuration loaded:[/green]")
     console.print(f"  Instance ID: {cfg.instance_id}")
@@ -74,28 +94,39 @@ def serve(
     console.print(f"  Model: {cfg.server.model_profile}")
     console.print(f"  GPU: {cfg.gpu.gpu_profile}")
 
-    # Set environment variables for the app
-    os.environ["KVBENCH_SERVER__HOST"] = host
-    os.environ["KVBENCH_SERVER__PORT"] = str(port)
-    os.environ["KVBENCH_SERVER__MODEL_PROFILE"] = model
-    os.environ["KVBENCH_SERVER__SERVER_TYPE"] = server_type
-    os.environ["KVBENCH_GPU__GPU_PROFILE"] = gpu
-    os.environ["KVBENCH_STORAGE__BACKEND_TYPE"] = storage
+    # Persist the fully-resolved config and point the app factory at it.
+    # This survives uvicorn worker processes and --reload subprocesses,
+    # which re-import the app module in a fresh interpreter.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", prefix="kvbench-config-", delete=False
+    ) as tmp:
+        resolved_config_path = tmp.name
+    cfg.to_yaml(resolved_config_path)
+    os.environ["KVBENCH_CONFIG_FILE"] = resolved_config_path
 
-    console.print(f"\n[green]Starting server at http://{host}:{port}[/green]")
+    bind_host = cfg.server.host
+    bind_port = cfg.server.port
+    console.print(f"\n[green]Starting server at http://{bind_host}:{bind_port}[/green]")
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
     # Start uvicorn server
     import uvicorn
 
-    uvicorn.run(
-        "kvbench.servers.app:app",
-        host=host,
-        port=port,
-        workers=workers if not reload else 1,
-        reload=reload,
-        log_level="info",
-    )
+    try:
+        uvicorn.run(
+            "kvbench.servers.app:get_app",
+            factory=True,
+            host=bind_host,
+            port=bind_port,
+            workers=cfg.server.workers if not reload else 1,
+            reload=reload,
+            log_level=cfg.server.log_level,
+        )
+    finally:
+        try:
+            os.unlink(resolved_config_path)
+        except OSError:
+            pass
 
 
 @app.command()

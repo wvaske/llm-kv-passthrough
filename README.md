@@ -106,14 +106,16 @@ kvbench serve --config config.yaml
 
 ## Supported GPU Profiles
 
+TFLOPS values are dense (non-sparsity) tensor-core numbers for consistent cross-GPU comparisons.
+
 | Profile | BF16 TFLOPS | HBM Bandwidth | HBM Capacity |
 |---------|-------------|---------------|--------------|
-| H100_SXM | 1979 | 3.35 TB/s | 80 GB |
-| H100_PCIe | 1513 | 2.0 TB/s | 80 GB |
-| H200_SXM | 1979 | 4.8 TB/s | 141 GB |
+| H100_SXM | 989.5 | 3.35 TB/s | 80 GB |
+| H100_PCIe | 756.5 | 2.0 TB/s | 80 GB |
+| H200_SXM | 989.5 | 4.8 TB/s | 141 GB |
 | A100_SXM | 312 | 2.0 TB/s | 80 GB |
-| L4 | 121 | 0.3 TB/s | 24 GB |
-| L40S | 362 | 0.864 TB/s | 48 GB |
+| L4 | 60.5 | 0.3 TB/s | 24 GB |
+| L40S | 181.05 | 0.864 TB/s | 48 GB |
 
 ## Supported Model Profiles
 

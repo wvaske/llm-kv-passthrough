@@ -14,12 +14,13 @@ The server provides an OpenAI-compatible API and simulates:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from kvbench.core.latency import LatencyCalculator
+from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -98,6 +99,18 @@ class PrefillServer:
         self.stats = PrefillStats()
         self._running = False
 
+        chunk_size = (
+            getattr(getattr(connector, "config", None), "chunk_size", None)
+            or config.connector.lmcache_chunk_size
+        )
+        self.processor = TokenProcessor(chunk_size=chunk_size)
+        self.calculator = LatencyCalculator(
+            gpu=config.gpu.gpu_profile,
+            model=config.server.model_profile,
+            tp_size=config.gpu.tp_size,
+            efficiency=config.gpu.efficiency_factor,
+        )
+
     @property
     def model_name(self) -> str:
         """Get the model name."""
@@ -111,7 +124,8 @@ class PrefillServer:
     def _simulate_tokenize(self, text: str) -> list[int]:
         """Simulate tokenization of text.
 
-        Uses a simple approximation: ~4 characters per token.
+        Content-based and prefix-stable: shared text prefixes produce shared
+        token prefixes, which is what makes prefix caching measurable.
 
         Args:
             text: The text to tokenize.
@@ -119,9 +133,7 @@ class PrefillServer:
         Returns:
             List of simulated token IDs.
         """
-        # Approximate: 4 chars per token, use hash for IDs
-        num_tokens = max(1, len(text) // 4)
-        return list(range(num_tokens))
+        return self.processor.simulate_tokenize(text)
 
     def _chunk_tokens(self, tokens: list[int], chunk_size: int) -> list[list[int]]:
         """Split tokens into chunks.
@@ -133,50 +145,31 @@ class PrefillServer:
         Returns:
             List of token chunks.
         """
-        chunks = []
-        for i in range(0, len(tokens), chunk_size):
-            chunks.append(tokens[i : i + chunk_size])
-        return chunks
+        return [tokens[i : i + chunk_size] for i in range(0, len(tokens), chunk_size)]
 
-    def _compute_chunk_hash(self, tokens: list[int]) -> str:
+    def _compute_chunk_hash(self, tokens: list[int], prefix_hash: str | None = None) -> str:
         """Compute a hash for a token chunk.
 
         Args:
             tokens: List of token IDs.
+            prefix_hash: Hash of the preceding chunk (prefix chaining).
 
         Returns:
             SHA-256 hash of the tokens.
         """
-        data = ",".join(str(t) for t in tokens).encode()
-        return hashlib.sha256(data).hexdigest()
+        return self.processor.compute_chunk_hash(tokens, prefix_hash=prefix_hash)
 
-    def _calculate_prefill_latency_ms(self, num_tokens: int) -> float:
-        """Calculate simulated prefill latency.
-
-        Prefill is compute-bound. Latency scales roughly linearly
-        with token count for small sequences, quadratically for
-        attention at longer sequences.
+    def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
+        """Calculate simulated prefill latency using the roofline model.
 
         Args:
-            num_tokens: Number of tokens to process.
+            num_tokens: Number of new tokens to process.
+            context_tokens: Already-cached prefix tokens they attend to.
 
         Returns:
             Estimated prefill latency in milliseconds.
         """
-        # Base latency: ~0.1ms per token for H100-class GPU
-        # This is a simplified model; actual latency depends on
-        # batch size, sequence length, and model architecture
-        efficiency = self.config.gpu.efficiency_factor
-        tp_size = self.config.gpu.tp_size
-
-        # Base compute time per token (ms)
-        base_latency_per_token = 0.1 / efficiency
-
-        # Scale with tensor parallelism
-        scaled_latency = base_latency_per_token / tp_size
-
-        # Total latency (simplified linear model)
-        return scaled_latency * num_tokens
+        return self.calculator.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
 
     async def process_prefill(
         self,
@@ -195,40 +188,38 @@ class PrefillServer:
         # Get prompt text
         prompt = request.prompt_text or ""
 
-        # Simulate tokenization
-        tokens = self._simulate_tokenize(prompt)
+        # Simulate tokenization (content-based, prefix-stable)
+        tokens = self.processor.simulate_tokenize(prompt)
         num_tokens = len(tokens)
 
-        # Get chunk size from connector config if available
-        chunk_size = 256
-        if hasattr(self.connector, "config"):
-            chunk_size = getattr(self.connector.config, "chunk_size", 256)
-
-        # Chunk tokens
-        chunks = self._chunk_tokens(tokens, chunk_size)
+        # Chunk with prefix-chained hashes
+        chunks = self.processor.chunk_tokens_with_metadata(tokens)
 
         cache_hits = 0
         cache_misses = 0
         total_prefill_latency = 0.0
 
         for chunk in chunks:
-            chunk_hash = self._compute_chunk_hash(chunk)
-
             # Check cache
-            if await self.connector.exists(chunk_hash):
+            if await self.connector.exists(chunk.chunk_hash):
                 cache_hits += 1
-                logger.debug(f"Cache hit for chunk {chunk_hash[:16]}...")
+                logger.debug(f"Cache hit for chunk {chunk.chunk_hash[:16]}...")
+                # Load the KV data from storage (the passthrough read path)
+                await self.connector.load(chunk.chunk_hash)
             else:
                 cache_misses += 1
-                logger.debug(f"Cache miss for chunk {chunk_hash[:16]}...")
+                logger.debug(f"Cache miss for chunk {chunk.chunk_hash[:16]}...")
 
-                # Simulate prefill latency for cache miss
-                chunk_latency = self._calculate_prefill_latency_ms(len(chunk))
+                # Simulate prefill latency for cache miss; the chunk attends
+                # to everything before it in the sequence
+                chunk_latency = self._calculate_prefill_latency_ms(
+                    chunk.size, context_tokens=chunk.start_position
+                )
                 total_prefill_latency += chunk_latency
                 await asyncio.sleep(chunk_latency / 1000)
 
                 # Store in cache
-                await self.connector.store(chunk_hash, len(chunk))
+                await self.connector.store(chunk.chunk_hash, chunk.size)
 
         elapsed_ms = (time.time() - start_time) * 1000
         return num_tokens, cache_hits, cache_misses, elapsed_ms

@@ -46,18 +46,14 @@ class TestCombinedServer:
         return MemoryStorageBackend(max_size_bytes=10_000_000, name="test")
 
     @pytest.fixture
-    async def server(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> CombinedServer:
+    async def server(self, config: KVBenchConfig, storage: MemoryStorageBackend) -> CombinedServer:
         """Create a test server instance."""
         connector = LMCacheConnector(storage=storage, name="test")
         server = CombinedServer(config=config, connector=connector)
         yield server
         await server.stop()
 
-    def test_init(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
+    def test_init(self, config: KVBenchConfig, storage: MemoryStorageBackend) -> None:
         """Test server initialization."""
         connector = LMCacheConnector(storage=storage)
         server = CombinedServer(config=config, connector=connector)
@@ -82,9 +78,7 @@ class TestCombinedServer:
         assert server.stats.completion_tokens == 10
 
     @pytest.mark.asyncio
-    async def test_chat_completions_stream(
-        self, server: CombinedServer
-    ) -> None:
+    async def test_chat_completions_stream(self, server: CombinedServer) -> None:
         """Test streaming chat completion."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
@@ -108,9 +102,7 @@ class TestCombinedServer:
         """Test cache hit/miss behavior."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
-            messages=[
-                ChatMessage(role=MessageRole.USER, content="Same prompt for caching")
-            ],
+            messages=[ChatMessage(role=MessageRole.USER, content="Same prompt for caching")],
             max_tokens=5,
         )
 
@@ -123,8 +115,9 @@ class TestCombinedServer:
         await server.chat_completions(request)
         second_hits = server.stats.cache_hits
 
-        # Should have more hits on second request
+        # Should have more hits on second request, and no new misses
         assert second_hits > first_hits
+        assert server.stats.cache_misses == first_misses
 
     @pytest.mark.asyncio
     async def test_list_models(self, server: CombinedServer) -> None:
@@ -156,9 +149,7 @@ class TestCombinedServer:
         assert metrics.requests_success == 1
 
     @pytest.mark.asyncio
-    async def test_start_stop(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
+    async def test_start_stop(self, config: KVBenchConfig, storage: MemoryStorageBackend) -> None:
         """Test server start and stop."""
         connector = LMCacheConnector(storage=storage)
         server = CombinedServer(config=config, connector=connector)
@@ -175,3 +166,69 @@ class TestCombinedServer:
         repr_str = repr(server)
         assert "CombinedServer" in repr_str
         assert "test-combined" in repr_str
+
+
+class TestCacheKeyCorrectness:
+    """Regression tests for cache-key correctness at the server level.
+
+    The original implementation derived cache keys from prompt *length*
+    only, so any two same-length prompts shared cache entries and hit-rate
+    metrics were meaningless.
+    """
+
+    @pytest.fixture
+    async def server(self) -> CombinedServer:
+        """Create a test server instance."""
+        storage = MemoryStorageBackend(max_size_bytes=100_000_000, name="test")
+        connector = LMCacheConnector(storage=storage, name="test")
+        server = CombinedServer(config=KVBenchConfig(instance_id="test-cache"), connector=connector)
+        yield server
+        await server.stop()
+
+    @staticmethod
+    def _request(content: str) -> ChatCompletionRequest:
+        return ChatCompletionRequest(
+            model="llama-3.1-8b",
+            messages=[ChatMessage(role=MessageRole.USER, content=content)],
+            max_tokens=1,
+        )
+
+    @pytest.mark.asyncio
+    async def test_same_length_different_content_does_not_share_cache(
+        self, server: CombinedServer
+    ) -> None:
+        """Two same-length, different-content prompts must not hit each
+        other's cache entries."""
+        await server.chat_completions(self._request("A" * 2000))
+        hits_after_first = server.stats.cache_hits
+        misses_after_first = server.stats.cache_misses
+        assert hits_after_first == 0
+        assert misses_after_first > 0
+
+        await server.chat_completions(self._request("B" * 2000))
+        # No new hits: different content must miss
+        assert server.stats.cache_hits == hits_after_first
+        assert server.stats.cache_misses > misses_after_first
+
+    @pytest.mark.asyncio
+    async def test_identical_prompt_hits_cache(self, server: CombinedServer) -> None:
+        """A repeated identical prompt must hit the cache."""
+        await server.chat_completions(self._request("C" * 2000))
+        misses_after_first = server.stats.cache_misses
+
+        await server.chat_completions(self._request("C" * 2000))
+        assert server.stats.cache_hits > 0
+        assert server.stats.cache_misses == misses_after_first
+
+    @pytest.mark.asyncio
+    async def test_shared_prefix_hits_only_prefix_chunks(self, server: CombinedServer) -> None:
+        """A prompt sharing a long prefix with a previous one must hit the
+        prefix chunks and miss its own distinct suffix."""
+        prefix = "You are a helpful assistant. " * 200  # ~1450 tokens
+        await server.chat_completions(self._request(prefix + "Question one?"))
+        hits_first = server.stats.cache_hits
+
+        await server.chat_completions(self._request(prefix + "A different question two?"))
+        # Prefix chunks hit, suffix chunk misses
+        assert server.stats.cache_hits > hits_first
+        assert server.stats.cache_misses > 0

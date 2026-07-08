@@ -208,7 +208,7 @@ class TestH100SXMProfile:
     def test_h100_sxm_specs(self) -> None:
         """Test H100 SXM profile has correct specifications."""
         profile = get_gpu_profile("H100_SXM")
-        assert profile.bf16_tflops == 1979.0
+        assert profile.bf16_tflops == 989.5
         assert profile.hbm_bandwidth_tb_s == 3.35
         assert profile.hbm_capacity_gb == 80
         assert profile.nvlink_bandwidth_gb_s == 900.0
@@ -221,7 +221,7 @@ class TestH100PCIeProfile:
     def test_h100_pcie_specs(self) -> None:
         """Test H100 PCIe profile has correct specifications."""
         profile = get_gpu_profile("H100_PCIe")
-        assert profile.bf16_tflops == 1513.0
+        assert profile.bf16_tflops == 756.5
         assert profile.hbm_bandwidth_tb_s == 2.0
         assert profile.hbm_capacity_gb == 80
         assert profile.pcie_bandwidth_gb_s == 128.0  # PCIe Gen5
@@ -233,7 +233,7 @@ class TestH200SXMProfile:
     def test_h200_sxm_specs(self) -> None:
         """Test H200 SXM profile has correct specifications."""
         profile = get_gpu_profile("H200_SXM")
-        assert profile.bf16_tflops == 1979.0
+        assert profile.bf16_tflops == 989.5
         assert profile.hbm_bandwidth_tb_s == 4.8
         assert profile.hbm_capacity_gb == 141
 
@@ -255,7 +255,7 @@ class TestL4Profile:
     def test_l4_specs(self) -> None:
         """Test L4 profile has correct specifications."""
         profile = get_gpu_profile("L4")
-        assert profile.bf16_tflops == 121.0
+        assert profile.bf16_tflops == 60.5
         assert profile.hbm_bandwidth_tb_s == 0.3
         assert profile.hbm_capacity_gb == 24
 
@@ -266,6 +266,6 @@ class TestL40SProfile:
     def test_l40s_specs(self) -> None:
         """Test L40S profile has correct specifications."""
         profile = get_gpu_profile("L40S")
-        assert profile.bf16_tflops == 362.0
+        assert profile.bf16_tflops == 181.05
         assert profile.hbm_bandwidth_tb_s == 0.864
         assert profile.hbm_capacity_gb == 48

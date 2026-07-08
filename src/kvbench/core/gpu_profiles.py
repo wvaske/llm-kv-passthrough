@@ -73,11 +73,14 @@ class GPUProfile:
 
 
 # GPU Profile Registry
-# These profiles are based on official NVIDIA specifications
+# These profiles are based on official NVIDIA specifications.
+# All TFLOPS values are DENSE (non-sparsity) tensor-core numbers so that
+# cross-GPU comparisons are consistent; NVIDIA marketing numbers for
+# Hopper/Ada are typically the 2:4 structured-sparsity figures (2x dense).
 GPU_PROFILES: dict[str, GPUProfile] = {
     "H100_SXM": GPUProfile(
         name="NVIDIA H100 SXM",
-        bf16_tflops=1979.0,
+        bf16_tflops=989.5,
         hbm_bandwidth_tb_s=3.35,
         hbm_capacity_gb=80,
         nvlink_bandwidth_gb_s=900.0,
@@ -85,7 +88,7 @@ GPU_PROFILES: dict[str, GPUProfile] = {
     ),
     "H100_PCIe": GPUProfile(
         name="NVIDIA H100 PCIe",
-        bf16_tflops=1513.0,
+        bf16_tflops=756.5,
         hbm_bandwidth_tb_s=2.0,
         hbm_capacity_gb=80,
         nvlink_bandwidth_gb_s=600.0,
@@ -94,7 +97,7 @@ GPU_PROFILES: dict[str, GPUProfile] = {
     ),
     "H200_SXM": GPUProfile(
         name="NVIDIA H200 SXM",
-        bf16_tflops=1979.0,
+        bf16_tflops=989.5,
         hbm_bandwidth_tb_s=4.8,
         hbm_capacity_gb=141,
         nvlink_bandwidth_gb_s=900.0,
@@ -118,7 +121,7 @@ GPU_PROFILES: dict[str, GPUProfile] = {
     ),
     "L4": GPUProfile(
         name="NVIDIA L4",
-        bf16_tflops=121.0,
+        bf16_tflops=60.5,
         hbm_bandwidth_tb_s=0.3,
         hbm_capacity_gb=24,
         pcie_bandwidth_gb_s=64.0,
@@ -126,7 +129,7 @@ GPU_PROFILES: dict[str, GPUProfile] = {
     ),
     "L40S": GPUProfile(
         name="NVIDIA L40S",
-        bf16_tflops=362.0,
+        bf16_tflops=181.05,
         hbm_bandwidth_tb_s=0.864,
         hbm_capacity_gb=48,
         pcie_bandwidth_gb_s=64.0,

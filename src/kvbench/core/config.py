@@ -196,6 +196,18 @@ class GPUEmulationConfig(BaseModel):
         default="H100_SXM",
         description="Name of the GPU profile to emulate",
     )
+
+    @field_validator("gpu_profile")
+    @classmethod
+    def validate_gpu_profile(cls, v: str) -> str:
+        """Validate that the GPU profile exists in the registry."""
+        from kvbench.core.gpu_profiles import GPU_PROFILES
+
+        if v not in GPU_PROFILES:
+            available = ", ".join(sorted(GPU_PROFILES.keys()))
+            raise ValueError(f"Unknown GPU profile: {v!r}. Available profiles: {available}")
+        return v
+
     efficiency_factor: float = Field(
         default=0.7,
         ge=0.1,
@@ -240,6 +252,18 @@ class ServerConfig(BaseModel):
         default="llama-3.1-8b",
         description="Name of the model profile to emulate",
     )
+
+    @field_validator("model_profile")
+    @classmethod
+    def validate_model_profile(cls, v: str) -> str:
+        """Validate that the model profile exists in the registry."""
+        from kvbench.core.models import MODEL_PROFILES
+
+        if v not in MODEL_PROFILES:
+            available = ", ".join(sorted(MODEL_PROFILES.keys()))
+            raise ValueError(f"Unknown model profile: {v!r}. Available profiles: {available}")
+        return v
+
     workers: int = Field(
         default=1,
         ge=1,
@@ -270,6 +294,24 @@ class DistributedConfig(BaseModel):
         default_factory=list,
         description="List of decode server endpoints",
     )
+
+    @field_validator("prefill_endpoints", "decode_endpoints", mode="before")
+    @classmethod
+    def parse_endpoint_list(cls, v: object) -> object:
+        """Accept endpoint lists given as strings (env vars).
+
+        Supports JSON arrays ('["http://a:8000", "http://b:8000"]') and
+        comma-separated values ('http://a:8000,http://b:8000').
+        """
+        if isinstance(v, str):
+            import json
+
+            stripped = v.strip()
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return v
+
     registry_url: str | None = Field(
         default=None,
         description="URL of the service registry",
