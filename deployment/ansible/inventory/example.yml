@@ -1,51 +1,45 @@
 # KV-Bench Ansible Inventory Example
 # Copy this file and modify for your environment
 #
-# KV-Bench is designed to characterize storage workload patterns for
-# shared KV caches in LLM serving. This example uses NFS as the
-# shared storage backend to measure storage I/O patterns.
-#
-# For LMCache-specific deployment, see: inventory/lmcache.yml
+# KV-Bench characterizes storage workload patterns for shared KV caches
+# in LLM serving. All storage is owned by LMCache: the lmcache_* vars
+# below render /etc/kvbench/lmcache.yaml (LMCache's own application
+# config). This example shares an NFS mount across the fleet as
+# LMCache's disk tier.
 
 all:
   vars:
     # ===========================================
     # Global KV-Bench Settings
     # ===========================================
-    kvbench_version: "latest"
+    # pip requirement to install (override with a wheel path or VCS ref)
+    # kvbench_pip_spec: "kvbench[lmcache] @ git+https://github.com/wvaske/llm-kv-passthrough.git"
     kvbench_model: "llama-3.1-8b"
     kvbench_gpu: "H100_SXM"
     kvbench_efficiency: 0.7
     kvbench_log_level: "info"
 
     # ===========================================
-    # Shared Storage Configuration
+    # LMCache Storage Configuration
+    # (rendered into /etc/kvbench/lmcache.yaml — LMCache owns storage)
     # ===========================================
-    # NFS is the default for characterizing storage workloads.
-    # Other options: redis, ceph, s3 (MinIO), weka, mooncake
-    kvbench_storage: "nfs"
-    kvbench_filesystem_path: "/mnt/nfs/kvbench"
+    lmcache_chunk_size: 256
+    lmcache_max_local_cpu_size_gb: 4.0
+
+    # Disk tier on a shared NFS mount: every node sees the same cache
+    # namespace, so prefill-written KV is readable by decode nodes.
+    lmcache_local_disk_path: "/mnt/nfs/kvcache"
+    lmcache_max_local_disk_size_gb: 500.0
+
+    # Or use a network store as the shared remote tier instead:
+    # lmcache_remote_url: "redis://cache-host:6379"
+    # lmcache_remote_url: "s3://kv-cache-bucket"
+    # lmcache_remote_url: "fs:///mnt/nfs/kvcache/"
 
     # NFS mount options (used by deploy playbook)
     lmcache_nfs_server: "nfs-server.example.com"
     lmcache_nfs_export: "/exports/kvbench"
     lmcache_nfs_options: "rw,sync,hard,intr"
-
-    # ===========================================
-    # LMCache Connector Settings
-    # ===========================================
-    kvbench_connector_type: lmcache
-    kvbench_lmcache_chunk_size: 256
-    # kvbench_lmcache_world_size: 1
-    # kvbench_lmcache_worker_id: 0
-
-    # ===========================================
-    # Resource Allocation
-    # ===========================================
-    kvbench_cpu_memory_gb: 64.0
-    kvbench_memory_allocation: eager
-    kvbench_nvme_storage_gb: 500.0
-    kvbench_nvme_path: /var/lib/kvbench/nvme
 
     # ===========================================
     # Metrics & Monitoring
@@ -78,14 +72,10 @@ all:
           ansible_host: 10.0.0.11
           kvbench_instance_id: prefill-1
           kvbench_server_type: prefill
-          kvbench_lmcache_worker_id: 0
-          kvbench_lmcache_world_size: 4
         prefill-2:
           ansible_host: 10.0.0.12
           kvbench_instance_id: prefill-2
           kvbench_server_type: prefill
-          kvbench_lmcache_worker_id: 1
-          kvbench_lmcache_world_size: 4
 
     # ===========================================
     # Decode Servers (token generation)
@@ -96,14 +86,10 @@ all:
           ansible_host: 10.0.0.21
           kvbench_instance_id: decode-1
           kvbench_server_type: decode
-          kvbench_lmcache_worker_id: 2
-          kvbench_lmcache_world_size: 4
         decode-2:
           ansible_host: 10.0.0.22
           kvbench_instance_id: decode-2
           kvbench_server_type: decode
-          kvbench_lmcache_worker_id: 3
-          kvbench_lmcache_world_size: 4
 
     # ===========================================
     # Proxy / Load Balancer
@@ -123,11 +109,3 @@ all:
         prefill:
         decode:
         proxy:
-
-    # ===========================================
-    # LMCache Servers (alternative grouping)
-    # ===========================================
-    lmcache_servers:
-      children:
-        prefill:
-        decode:

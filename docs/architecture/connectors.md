@@ -44,8 +44,49 @@ kv:
 
 Install with `pip install "kvbench[lmcache]"`.
 
-## KVBM (planned)
+## KVBM
 
-NVIDIA Dynamo's KV Block Manager is the second stack on the roadmap. The
-factory rejects `stack: kvbm` with a clear error until the integration is
-real — there is deliberately no stub implementation.
+NVIDIA Dynamo's [KV Block Manager](https://docs.nvidia.com/dynamo/latest/architecture/kvbm_components.html)
+(KVBM) is the second stack on the roadmap. `stack: kvbm` is accepted in
+configuration but rejected at startup with the reason below — there is
+deliberately no stub implementation.
+
+### Why KVBM is not yet supported
+
+Verified empirically against `kvbm` 1.2.1 from PyPI on a CPU-only host
+(July 2026):
+
+1. **The data plane requires the CUDA driver.** `KvbmWorker` — the
+   component that registers KV memory and executes all tier transfers
+   (device → host → disk → remote, via NIXL) — panics at construction
+   attempting to dynamically load `libcuda.so`, even when handed CPU
+   tensors. Without a worker, no bytes move.
+2. **The control plane cannot stand alone.** `BlockManager` requires a
+   `KvbmLeader`, and the leader's initialization barrier waits for
+   workers to register — which circles back to requirement 1.
+3. **No escape hatch.** The `DYN_KVBM_*` configuration surface (extracted
+   from the shipped binary) tunes cache sizes, disk paths, and transfer
+   batching, but offers no CPU-device or mock-transfer mode. NVIDIA's
+   documentation describes the CPU (G2) and disk (G3) tiers only as
+   offload targets fed from GPU memory (G1).
+
+By contrast, LMCache ships a CPU platform stub and a pluggable
+GPU-connector interface, which is exactly the seam KV-Bench mocks.
+
+### What would unblock it
+
+- **Upstream**: a CPU device layout / mock transfer backend in KVBM's
+  worker, letting host memory stand in for G1 the way KV-Bench's
+  `MockGPUConnector` does for LMCache. KVBM's design (per-tier block
+  pools behind one lifecycle API) is compatible with this; the current
+  wheel just hard-binds the transfer engine to CUDA.
+- **Alternatively**: a GPU-enabled KV-Bench deployment mode, where KVBM
+  runs its real data plane on a GPU node while KV-Bench still simulates
+  inference timing. This trades away KV-Bench's GPU-less premise and is
+  only worth building against a testable environment.
+
+KVBM's storage-relevant configuration is, like LMCache's, its own:
+`DYN_KVBM_CPU_CACHE_GB`, `DYN_KVBM_DISK_CACHE_GB`,
+`DYN_KVBM_DISK_CACHE_DIR`, etc. — when the integration lands, KV-Bench
+will pass that surface through unmodified, mirroring the LMCache
+approach.

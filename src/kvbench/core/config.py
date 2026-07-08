@@ -25,15 +25,17 @@ class KVStackConfig(BaseModel):
     KV-Bench deliberately has no storage settings of its own.
 
     Attributes:
-        stack: Which KV management stack to use.
+        stack: Which KV management stack to use. 'kvbm' is accepted here
+            but rejected at stack-creation time with the reason it is not
+            yet supported (see kvbench.kv.factory).
         lmcache_config_file: Path to LMCache's own configuration file,
             passed verbatim to LMCacheEngineConfig.from_file(). When unset,
             LMCache is configured from its LMCACHE_* environment variables.
     """
 
-    stack: Literal["lmcache"] = Field(
+    stack: Literal["lmcache", "kvbm"] = Field(
         default="lmcache",
-        description="KV management stack ('kvbm' planned)",
+        description="KV management stack",
     )
     lmcache_config_file: Path | None = Field(
         default=None,

@@ -1,141 +1,49 @@
 # KV-Bench Deployment
 
-This directory contains deployment configurations for KV-Bench, a system designed to characterize storage workload patterns for shared KV caches in LLM serving.
+Deployment configurations for KV-Bench, a system for characterizing
+storage workload patterns for shared KV caches in LLM serving.
 
-## Deployment Options
+KV-Bench performs no storage I/O of its own — all KV cache operations go
+through the real LMCache engine, and **storage is selected and tuned in
+LMCache's own configuration** (config file or `LMCACHE_*` environment
+variables). Deploying a benchmark therefore means: deploy the storage you
+want to test, then point LMCache at it.
 
-| Method | Use Case | Directory |
-|--------|----------|-----------|
-| Docker | Containerized deployment | `docker/` |
-| Ansible | Bare-metal automation | `ansible/` |
+## Layout
 
-## Storage Backend Options
+| Path | Contents |
+|------|----------|
+| `docker/docker-compose.yml` | Single combined server, LMCache CPU + disk tiers |
+| `docker/docker-compose.distributed.yml` | Proxy + prefill/decode fleets sharing a Redis remote tier |
+| `ansible/` | Fleet deployment: venv, `kvbench[lmcache]`, rendered configs, systemd |
 
-KV-Bench supports multiple storage backends for characterizing I/O patterns:
-
-| Backend | Docker Compose File | Ansible Inventory | Use Case |
-|---------|--------------------|--------------------|----------|
-| **NFS** | `docker-compose.nfs.yml` | `inventory/example.yml` | On-premise shared storage |
-| **Ceph** | - | `inventory/ceph.yml` | Distributed object storage |
-| **MinIO/S3** | `docker-compose.minio.yml` | `inventory/minio.yml` | Cloud-native object storage |
-| **Redis** | `docker-compose.lmcache.yml` | `inventory/lmcache.yml` | In-memory caching |
-
-## Quick Start
-
-### Docker - NFS Storage (Recommended for Workload Characterization)
+## Quick start
 
 ```bash
-cd docker
-# Edit docker-compose.nfs.yml to set your NFS server address
-docker-compose -f docker-compose.nfs.yml up -d
+# Single node
+cd docker && docker compose up -d
+
+# Disaggregated with shared Redis tier
+cd docker && docker compose -f docker-compose.distributed.yml up -d
+
+# Fleet via Ansible
+cd ansible && ansible-playbook -i inventory/example.yml playbooks/deploy.yml
 ```
 
-### Docker - MinIO Storage
+## Choosing the storage under test
 
-```bash
-cd docker
-docker-compose -f docker-compose.minio.yml up -d
+Map your storage to an LMCache tier — local NVMe and shared filesystems
+via the disk tier (`local_disk`), network stores via the remote tier
+(`remote_url`: `redis://`, `valkey://`, `s3://` for MinIO/S3, `fs://` for
+mounted filesystems, `lm://` for LMCache's cache server, `mooncakestore://`,
+`infinistore://`). See
+[docs/deployment/storage-backends.md](../docs/deployment/storage-backends.md)
+for per-system instructions.
 
-# With monitoring
-docker-compose -f docker-compose.minio.yml --profile monitoring up -d
-```
+## What the benchmark measures
 
-### Docker - LMCache with Redis
-
-```bash
-cd docker
-docker-compose -f docker-compose.lmcache.yml up -d
-```
-
-### Ansible - NFS Deployment
-
-```bash
-cd ansible
-cp inventory/example.yml inventory/production.yml
-# Edit inventory/production.yml with your NFS server details
-ansible-playbook -i inventory/production.yml playbooks/deploy-lmcache.yml
-```
-
-### Ansible - Ceph Deployment
-
-```bash
-cd ansible
-cp inventory/ceph.yml inventory/production.yml
-# Edit inventory/production.yml
-ansible-playbook -i inventory/production.yml playbooks/deploy-lmcache.yml
-```
-
-### Ansible - MinIO Deployment
-
-```bash
-cd ansible
-cp inventory/minio.yml inventory/production.yml
-# Edit inventory/production.yml
-ansible-playbook -i inventory/production.yml playbooks/deploy-lmcache.yml
-```
-
-## Deployment Architectures
-
-### Single Server (Development)
-- 1 KV-Bench server (combined mode)
-- In-memory or local disk storage
-
-### Single Server with Shared Storage
-- 1 KV-Bench server
-- NFS/Ceph/MinIO for storage workload characterization
-
-### Distributed (Production)
-- 2+ Prefill servers
-- 2+ Decode servers
-- 1 Proxy/Load balancer
-- Shared storage (NFS/Ceph/MinIO) for KV cache
-
-## Storage Workload Characterization
-
-The primary purpose of KV-Bench is to characterize storage I/O patterns. Key metrics:
-
-| Metric | Description |
-|--------|-------------|
-| Write IOPS | Cache store operations per second |
-| Read IOPS | Cache load operations per second |
-| Throughput | MB/s for reads and writes |
-| Latency | P50, P95, P99 operation latencies |
-| Object Size | Distribution of KV cache chunk sizes |
-
-### Running Benchmarks
-
-```bash
-# Start server
-docker-compose -f docker-compose.nfs.yml up -d
-
-# Run workload
-genai-perf \
-  --endpoint http://localhost:8000/v1/chat/completions \
-  --model llama-3.1-8b \
-  --concurrency 10 \
-  --duration 300
-
-# Collect metrics
-curl http://localhost:8000/metrics > metrics.txt
-```
-
-## Configuration
-
-See the documentation for detailed configuration:
-
-- [Configuration Guide](../docs/getting-started/configuration.md)
-- [Storage Backends](../docs/deployment/storage-backends.md)
-- [LMCache Deployment](../docs/deployment/lmcache.md)
-
-## Monitoring
-
-KV-Bench exposes metrics at `/metrics` endpoint. Integrate with:
-- Prometheus (configurations included)
-- Grafana
-- Custom monitoring solutions
-
-Start monitoring stack:
-
-```bash
-docker-compose -f docker-compose.minio.yml --profile monitoring up -d
-```
+Serving-level metrics (TTFT, ITL, throughput, cache hit rate) as a
+function of the storage underneath: GPU compute is simulated from
+hardware profiles and held constant; KV cache I/O is real and performed
+by LMCache. Swap the storage tier, rerun the same workload, and the delta
+is attributable to storage.

@@ -16,9 +16,20 @@ if TYPE_CHECKING:
     from kvbench.core.config import KVBenchConfig
     from kvbench.kv.base import KVStack
 
-_PLANNED_STACKS = {
-    "kvbm": "NVIDIA Dynamo KV Block Manager support is planned but not yet implemented",
-}
+# Verified against kvbm 1.2.1 on a CPU-only host (2026-07): KvbmWorker —
+# KVBM's entire data plane — panics loading libcuda.so at construction,
+# BlockManager requires a KvbmLeader whose init barrier waits on those
+# workers, and no DYN_KVBM_* flag provides a CPU or mock device mode.
+# Details and upstream requirements: docs/architecture/connectors.md.
+_KVBM_UNAVAILABLE = (
+    "KV stack 'kvbm' is not yet supported: NVIDIA Dynamo's KV Block Manager "
+    "cannot perform storage I/O on a GPU-less host (its data plane, "
+    "KvbmWorker, requires the NVIDIA CUDA driver at initialization), and "
+    "KV-Bench targets CPU-only benchmark nodes. KVBM support requires "
+    "either a CPU device mode in upstream kvbm or a GPU-enabled KV-Bench "
+    "build. See docs/architecture/connectors.md#kvbm for the full analysis. "
+    "Use stack 'lmcache' instead."
+)
 
 
 def create_kv_stack(config: KVBenchConfig) -> KVStack:
@@ -43,7 +54,7 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             config_file=config.kv.lmcache_config_file,
         )
 
-    if stack in _PLANNED_STACKS:
-        raise ValueError(f"KV stack {stack!r} is not available: {_PLANNED_STACKS[stack]}")
+    if stack == "kvbm":
+        raise ValueError(_KVBM_UNAVAILABLE)
 
     raise ValueError(f"Unknown KV stack: {stack!r}. Supported: lmcache")

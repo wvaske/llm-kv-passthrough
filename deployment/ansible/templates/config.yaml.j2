@@ -17,46 +17,15 @@ gpu:
   efficiency_factor: {{ kvbench_efficiency | default(0.7) }}
   tp_size: {{ kvbench_tp_size | default(1) }}
 
-storage:
-  backend_type: {{ kvbench_storage | default('memory') }}
-{% if kvbench_storage == 'redis' %}
-  redis_url: {{ redis_url | default('redis://localhost:6379') }}
-  redis_cluster: {{ redis_cluster | default(false) | lower }}
-{% if redis_prefix is defined %}
-  redis_prefix: {{ redis_prefix }}
-{% endif %}
-{% if redis_ttl is defined %}
-  redis_ttl: {{ redis_ttl }}
-{% endif %}
-{% elif kvbench_storage == 'local_disk' %}
-  local_disk_path: {{ kvbench_local_disk_path | default('/var/lib/kvbench/cache') }}
-  local_disk_max_size_gb: {{ kvbench_local_disk_max_size_gb | default(100.0) }}
-{% elif kvbench_storage in ['nfs', 'weka'] %}
-  filesystem_path: {{ kvbench_filesystem_path | default('/mnt/kvbench') }}
-{% elif kvbench_storage == 's3' %}
-  s3_endpoint: {{ kvbench_s3_endpoint | default('https://s3.amazonaws.com') }}
-  s3_bucket: {{ kvbench_s3_bucket }}
-{% if kvbench_s3_prefix is defined %}
-  s3_prefix: {{ kvbench_s3_prefix }}
-{% endif %}
-{% if kvbench_s3_region is defined %}
-  s3_region: {{ kvbench_s3_region }}
-{% endif %}
-{% elif kvbench_storage == 'mooncake' %}
-  mooncake_local_hostname: {{ kvbench_mooncake_hostname | default(ansible_hostname) }}
-  mooncake_metadata_server: {{ kvbench_mooncake_metadata_server | default('etcd://localhost:2379') }}
+{% if kvbench_server_type | default('combined') != 'proxy' %}
+# Storage is configured entirely in LMCache's own config file
+# (rendered from lmcache.yaml.j2); KV-Bench has no storage settings.
+kv:
+  stack: lmcache
+  lmcache_config_file: {{ kvbench_config_dir | default('/etc/kvbench') }}/lmcache.yaml
 {% endif %}
 
-connector:
-  connector_type: {{ kvbench_connector_type | default('lmcache') }}
-{% if kvbench_connector_type == 'lmcache' %}
-  lmcache_chunk_size: {{ kvbench_lmcache_chunk_size | default(256) }}
-{% if kvbench_lmcache_remote_url is defined %}
-  lmcache_remote_url: {{ kvbench_lmcache_remote_url }}
-{% endif %}
-{% endif %}
-
-{% if kvbench_server_type == 'proxy' %}
+{% if kvbench_server_type | default('combined') == 'proxy' %}
 distributed:
   prefill_endpoints:
 {% for host in groups['prefill'] %}
@@ -67,14 +36,7 @@ distributed:
     - http://{{ hostvars[host].ansible_host | default(host) }}:8000
 {% endfor %}
   health_check_interval: {{ kvbench_health_check_interval | default(10.0) }}
-  load_balance_strategy: {{ kvbench_load_balance_strategy | default('round_robin') }}
 {% endif %}
-
-resources:
-  cpu_memory_gb: {{ kvbench_cpu_memory_gb | default(8.0) }}
-  nvme_storage_gb: {{ kvbench_nvme_storage_gb | default(100.0) }}
-  nvme_path: {{ kvbench_nvme_path | default('/var/lib/kvbench/nvme') }}
-  memory_allocation: {{ kvbench_memory_allocation | default('lazy') }}
 
 metrics:
   enabled: {{ kvbench_metrics_enabled | default(true) | lower }}
