@@ -43,6 +43,27 @@ def serve(
         "LMCACHE_* env vars are used when unset",
     ),
     workers: int | None = typer.Option(None, "--workers", "-w", help="Number of worker processes"),
+    tp_size: int | None = typer.Option(
+        None, "--tp-size", help="Tensor parallelism size for the emulated GPUs"
+    ),
+    pp_size: int | None = typer.Option(
+        None, "--pp-size", help="Pipeline parallelism size for the emulated GPUs"
+    ),
+    simple_timing: bool | None = typer.Option(
+        None,
+        "--simple-timing/--roofline-timing",
+        help="Use fixed ms/token timing instead of the roofline model",
+    ),
+    prefill_ms_per_token: float | None = typer.Option(
+        None,
+        "--prefill-ms-per-token",
+        help="Prefill latency per token in ms (simple timing mode)",
+    ),
+    decode_ms_per_token: float | None = typer.Option(
+        None,
+        "--decode-ms-per-token",
+        help="Decode latency per token in ms (simple timing mode)",
+    ),
     config: str | None = typer.Option(
         None, "--config", "-c", help="Path to config file (explicit CLI flags override it)"
     ),
@@ -80,8 +101,25 @@ def serve(
     }
     if server_updates:
         updates["server"] = cfg.server.model_copy(update=server_updates)
-    if gpu is not None:
-        updates["gpu"] = cfg.gpu.model_copy(update={"gpu_profile": gpu})
+    gpu_updates = {
+        key: value
+        for key, value in {"gpu_profile": gpu, "tp_size": tp_size}.items()
+        if value is not None
+    }
+    if gpu_updates:
+        updates["gpu"] = cfg.gpu.model_copy(update=gpu_updates)
+    timing_updates = {
+        key: value
+        for key, value in {
+            "simple_mode": simple_timing,
+            "prefill_ms_per_token": prefill_ms_per_token,
+            "decode_ms_per_token": decode_ms_per_token,
+            "pp_size": pp_size,
+        }.items()
+        if value is not None
+    }
+    if timing_updates:
+        updates["timing"] = cfg.timing.model_copy(update=timing_updates)
     if lmcache_config is not None:
         updates["kv"] = cfg.kv.model_copy(update={"lmcache_config_file": lmcache_config})
     if updates:
@@ -97,6 +135,17 @@ def serve(
     )
     console.print(f"  Model: {cfg.server.model_profile}")
     console.print(f"  GPU: {cfg.gpu.gpu_profile}")
+    if cfg.timing.simple_mode:
+        console.print(
+            f"  Timing: simple ({cfg.timing.prefill_ms_per_token} ms/token prefill, "
+            f"{cfg.timing.decode_ms_per_token} ms/token decode)"
+        )
+    else:
+        console.print(
+            f"  Timing: roofline (TP={cfg.gpu.tp_size}, PP={cfg.timing.pp_size}, "
+            f"comm: TP {'on' if cfg.timing.include_tp_communication else 'off'}, "
+            f"PP {'on' if cfg.timing.include_pp_communication else 'off'})"
+        )
 
     # Persist the fully-resolved config and point the app factory at it.
     # This survives uvicorn worker processes and --reload subprocesses,

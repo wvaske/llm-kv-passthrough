@@ -48,6 +48,15 @@ gpu:
   efficiency_factor: 0.7
   tp_size: 1
 
+timing:
+  simple_mode: false            # true = fixed ms/token instead of roofline
+  prefill_ms_per_token: 0.1     # simple mode only
+  decode_ms_per_token: 1.0      # simple mode only
+  include_tp_communication: true   # AllReduce timing when tp_size > 1
+  include_pp_communication: true   # send/recv timing when pp_size > 1
+  pp_size: 1
+  # nvlink_bandwidth_gb_s: 900.0   # defaults to the GPU profile's NVLink
+
 kv:
   stack: lmcache
   # LMCache's own config file controls all storage (tiers, backends, sizes)
@@ -94,6 +103,21 @@ kvbench serve --config config.yaml
 | `gpu_profile` | `H100_SXM` | GPU profile to emulate |
 | `efficiency_factor` | `0.7` | GPU efficiency (0.1-1.0) |
 | `tp_size` | `1` | Tensor parallelism size |
+
+### Timing Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `simple_mode` | `false` | Fixed ms/token timing instead of the roofline model |
+| `prefill_ms_per_token` | `0.1` | Prefill latency per token in ms (simple mode) |
+| `decode_ms_per_token` | `1.0` | Decode latency per token in ms (simple mode) |
+| `include_tp_communication` | `true` | Add AllReduce timing when `tp_size > 1` (roofline mode) |
+| `include_pp_communication` | `true` | Add pipeline send/recv timing when `pp_size > 1` (roofline mode) |
+| `pp_size` | `1` | Pipeline parallelism size |
+| `nvlink_bandwidth_gb_s` | GPU profile | Interconnect bandwidth for communication timing |
+
+CLI shortcuts: `--simple-timing/--roofline-timing`, `--prefill-ms-per-token`,
+`--decode-ms-per-token`, `--tp-size`, and `--pp-size`.
 
 ### KV Stack Options
 

@@ -18,7 +18,6 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from kvbench.core.latency import LatencyCalculator
 from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
@@ -30,6 +29,7 @@ from kvbench.servers.openai_compat import (
     ModelInfo,
     ModelList,
 )
+from kvbench.timing import create_timing_strategy
 
 if TYPE_CHECKING:
     from kvbench.core.config import KVBenchConfig
@@ -107,12 +107,7 @@ class CombinedServer:
 
         self.chunk_size = kv.chunk_size
         self.processor = TokenProcessor(chunk_size=self.chunk_size)
-        self.calculator = LatencyCalculator(
-            gpu=config.gpu.gpu_profile,
-            model=config.server.model_profile,
-            tp_size=config.gpu.tp_size,
-            efficiency=config.gpu.efficiency_factor,
-        )
+        self.timing = create_timing_strategy(config)
 
     @property
     def model_name(self) -> str:
@@ -129,12 +124,12 @@ class CombinedServer:
         return self.processor.simulate_tokenize(text)
 
     def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
-        """Calculate prefill latency using the roofline model."""
-        return self.calculator.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
+        """Calculate prefill latency using the configured timing strategy."""
+        return self.timing.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
 
     def _calculate_decode_latency_ms(self, context_length: int) -> float:
-        """Calculate decode latency per token using the roofline model."""
-        return self.calculator.decode_latency(context_length).total_ms
+        """Calculate decode latency per token using the configured timing strategy."""
+        return self.timing.decode_latency(context_length).total_ms
 
     def _generate_mock_token(self, position: int) -> str:
         """Generate a mock token."""

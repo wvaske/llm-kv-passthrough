@@ -19,7 +19,6 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from kvbench.core.latency import LatencyCalculator
 from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionRequest,
@@ -30,6 +29,7 @@ from kvbench.servers.openai_compat import (
     ModelInfo,
     ModelList,
 )
+from kvbench.timing import create_timing_strategy
 
 if TYPE_CHECKING:
     from kvbench.core.config import KVBenchConfig
@@ -101,12 +101,7 @@ class PrefillServer:
 
         self.chunk_size = kv.chunk_size
         self.processor = TokenProcessor(chunk_size=self.chunk_size)
-        self.calculator = LatencyCalculator(
-            gpu=config.gpu.gpu_profile,
-            model=config.server.model_profile,
-            tp_size=config.gpu.tp_size,
-            efficiency=config.gpu.efficiency_factor,
-        )
+        self.timing = create_timing_strategy(config)
 
     @property
     def model_name(self) -> str:
@@ -133,7 +128,7 @@ class PrefillServer:
         return self.processor.simulate_tokenize(text)
 
     def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
-        """Calculate simulated prefill latency using the roofline model.
+        """Calculate simulated prefill latency using the configured timing strategy.
 
         Args:
             num_tokens: Number of new tokens to process.
@@ -142,7 +137,7 @@ class PrefillServer:
         Returns:
             Estimated prefill latency in milliseconds.
         """
-        return self.calculator.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
+        return self.timing.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
 
     async def process_prefill(
         self,

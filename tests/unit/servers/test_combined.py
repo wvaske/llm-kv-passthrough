@@ -235,3 +235,54 @@ class TestCacheKeyCorrectness:
         # Prefix chunks hit, suffix chunk misses
         assert server.stats.cache_hits > hits_first
         assert server.stats.cache_misses > 0
+
+
+class TestCombinedServerTiming:
+    """Timing configuration must flow into served latency."""
+
+    def _server(self, timing: dict | None = None, gpu: dict | None = None) -> CombinedServer:
+        data: dict = {"instance_id": "test-timing"}
+        if timing:
+            data["timing"] = timing
+        if gpu:
+            data["gpu"] = gpu
+        config = KVBenchConfig.model_validate(data)
+        return CombinedServer(config=config, kv=FakeKVStack(chunk_size=16))
+
+    def test_simple_timing_mode_used(self) -> None:
+        """simple_mode gives exact ms/token latencies."""
+        server = self._server(
+            timing={
+                "simple_mode": True,
+                "prefill_ms_per_token": 0.5,
+                "decode_ms_per_token": 2.0,
+            }
+        )
+        assert server._calculate_prefill_latency_ms(100) == pytest.approx(50.0)
+        assert server._calculate_decode_latency_ms(1000) == pytest.approx(2.0)
+
+    def test_tp_communication_increases_decode_latency(self) -> None:
+        """With TP > 1, enabling AllReduce timing makes decode slower."""
+        with_comm = self._server(
+            gpu={"tp_size": 4},
+            timing={"include_tp_communication": True},
+        )
+        without_comm = self._server(
+            gpu={"tp_size": 4},
+            timing={"include_tp_communication": False},
+        )
+        assert with_comm._calculate_decode_latency_ms(
+            1000
+        ) > without_comm._calculate_decode_latency_ms(1000)
+
+    def test_pp_communication_increases_prefill_latency(self) -> None:
+        """With PP > 1, enabling send/recv timing makes prefill slower."""
+        with_comm = self._server(
+            timing={"pp_size": 4, "include_pp_communication": True}
+        )
+        without_comm = self._server(
+            timing={"pp_size": 4, "include_pp_communication": False}
+        )
+        assert with_comm._calculate_prefill_latency_ms(
+            1000
+        ) > without_comm._calculate_prefill_latency_ms(1000)

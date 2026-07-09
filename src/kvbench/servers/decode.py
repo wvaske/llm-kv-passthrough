@@ -18,7 +18,6 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from kvbench.core.latency import LatencyCalculator
 from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
@@ -30,6 +29,7 @@ from kvbench.servers.openai_compat import (
     ModelInfo,
     ModelList,
 )
+from kvbench.timing import create_timing_strategy
 
 if TYPE_CHECKING:
     from kvbench.core.config import KVBenchConfig
@@ -106,12 +106,7 @@ class DecodeServer:
 
         self.chunk_size = kv.chunk_size
         self.processor = TokenProcessor(chunk_size=self.chunk_size)
-        self.calculator = LatencyCalculator(
-            gpu=config.gpu.gpu_profile,
-            model=config.server.model_profile,
-            tp_size=config.gpu.tp_size,
-            efficiency=config.gpu.efficiency_factor,
-        )
+        self.timing = create_timing_strategy(config)
 
     @property
     def model_name(self) -> str:
@@ -136,7 +131,7 @@ class DecodeServer:
         Returns:
             Estimated decode latency per token in milliseconds.
         """
-        return self.calculator.decode_latency(context_length).total_ms
+        return self.timing.decode_latency(context_length).total_ms
 
     async def _load_context_kv(self, prompt: str) -> tuple[int, int, int]:
         """Load the prompt's KV cache through the KV stack (decode read path).
