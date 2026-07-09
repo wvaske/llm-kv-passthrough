@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
-from kvbench.core.gpu_profiles import GPUProfile, get_gpu_profile
+from kvbench.core.gpu_profiles import get_gpu_profile
 from kvbench.core.latency import LatencyBreakdown, LatencyCalculator
-from kvbench.core.models import ModelProfile, get_model_profile
+from kvbench.core.models import get_model_profile
 
 
 class TestLatencyBreakdown:
@@ -96,8 +94,8 @@ class TestLatencyCalculator:
     def test_effective_compute_tflops(self) -> None:
         """Test effective compute throughput calculation."""
         calc = LatencyCalculator("H100_SXM", "llama-3.1-8b", tp_size=2, efficiency=0.5)
-        # H100_SXM has 1979 TFLOPS * 0.5 efficiency * 2 TP = 1979 TFLOPS
-        assert calc.effective_compute_tflops == 1979.0 * 0.5 * 2
+        # H100_SXM has 989.5 dense TFLOPS * 0.5 efficiency * 2 TP
+        assert calc.effective_compute_tflops == 989.5 * 0.5 * 2
 
     def test_effective_memory_bandwidth(self) -> None:
         """Test effective memory bandwidth calculation."""
@@ -319,8 +317,9 @@ class TestEstimateGenerationTime:
         """Test that tokens per second is calculated correctly."""
         calc = LatencyCalculator("H100_SXM", "llama-3.1-8b")
         result = calc.estimate_generation_time(1000, 100)
-        # TPS = output_tokens / (decode_ms / 1000)
-        expected_tps = 100 / (result["decode_ms"] / 1000)
+        # TPS = output_tokens / (total_ms / 1000); the first output token is
+        # produced by the prefill pass, so total time is the right denominator
+        expected_tps = 100 / (result["total_ms"] / 1000)
         assert abs(result["tokens_per_second"] - expected_tps) < 0.001
 
 
@@ -421,3 +420,70 @@ class TestDifferentModels:
 
         # 70B should be significantly slower (more weights to load)
         assert decode_70b.total_ms > decode_8b.total_ms * 2
+
+
+class TestPhysicalBounds:
+    """Regression tests pinning the model to physically possible values.
+
+    These would have caught the TP double-count (super-linear scaling) and
+    the sparsity-vs-dense TFLOPS inconsistency.
+    """
+
+    def test_tp_speedup_bounded_by_tp_size(self) -> None:
+        """TP=N can never speed anything up by more than N x."""
+        for tp in (2, 4, 8):
+            calc_tp1 = LatencyCalculator("H100_SXM", "llama-3.1-70b", tp_size=1)
+            calc_tpn = LatencyCalculator("H100_SXM", "llama-3.1-70b", tp_size=tp)
+
+            decode_ratio = (
+                calc_tp1.decode_latency(4096).total_ms / calc_tpn.decode_latency(4096).total_ms
+            )
+            prefill_ratio = (
+                calc_tp1.prefill_latency(4096).total_ms / calc_tpn.prefill_latency(4096).total_ms
+            )
+
+            assert 1.0 <= decode_ratio <= tp * 1.001
+            assert 1.0 <= prefill_ratio <= tp * 1.001
+
+    def test_decode_absolute_sanity_8b_h100(self) -> None:
+        """llama-8B decode on H100 must be in the single-digit-ms range.
+
+        Weight streaming floor: ~16 GB / (3.35 TB/s * 0.7 eff) ~= 6.8 ms.
+        """
+        calc = LatencyCalculator("H100_SXM", "llama-3.1-8b")
+        ms = calc.decode_latency(2048).total_ms
+        assert 3.0 < ms < 20.0
+
+    def test_prefill_absolute_sanity_8b_h100(self) -> None:
+        """llama-8B prefill of 1000 tokens on H100: ~2*P*N FLOPs -> tens of ms."""
+        calc = LatencyCalculator("H100_SXM", "llama-3.1-8b")
+        ms = calc.prefill_latency(1000).total_ms
+        assert 5.0 < ms < 60.0
+
+    def test_prefill_context_tokens_reduce_cost(self) -> None:
+        """Prefilling on top of a cached prefix costs less than from scratch,
+        but more than prefilling the same token count with no context."""
+        calc = LatencyCalculator("H100_SXM", "llama-3.1-8b")
+        from_scratch = calc.prefill_latency(10_000).total_ms
+        on_cached = calc.prefill_latency(1_000, context_tokens=9_000).total_ms
+        no_context = calc.prefill_latency(1_000).total_ms
+
+        assert on_cached < from_scratch
+        assert on_cached > no_context
+
+    def test_ttft_not_double_counting_first_token(self) -> None:
+        """With no cache, TTFT equals the prefill time (first token comes
+        from the prefill forward pass, not an extra decode step)."""
+        calc = LatencyCalculator("H100_SXM", "llama-3.1-8b")
+        ttft = calc.estimate_ttft(1000)
+        prefill_ms = calc.prefill_latency(1000).total_ms
+        assert abs(ttft - prefill_ms) < 1e-9
+
+    def test_gpu_comparison_is_consistent(self) -> None:
+        """H100 vs A100 prefill speedup must reflect the dense-FLOPS ratio
+        (~3.2x), not the sparsity-inflated ratio (~6.3x)."""
+        h100 = LatencyCalculator("H100_SXM", "llama-3.1-8b").prefill_latency(4096)
+        a100 = LatencyCalculator("A100_SXM", "llama-3.1-8b").prefill_latency(4096)
+        assert h100.is_compute_bound and a100.is_compute_bound
+        ratio = a100.total_ms / h100.total_ms
+        assert 2.5 < ratio < 4.0

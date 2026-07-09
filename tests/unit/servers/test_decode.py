@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from kvbench.connectors.lmcache import LMCacheConnector
 from kvbench.core.config import KVBenchConfig
 from kvbench.servers.decode import DecodeServer, DecodeStats
 from kvbench.servers.openai_compat import ChatCompletionRequest, ChatMessage, MessageRole
-from kvbench.storage.memory import MemoryStorageBackend
+from tests.fakes import FakeKVStack
 
 
 class TestDecodeStats:
@@ -18,8 +17,9 @@ class TestDecodeStats:
         """Test default values are set correctly."""
         stats = DecodeStats()
         assert stats.requests_total == 0
+        assert stats.requests_success == 0
+        assert stats.requests_failed == 0
         assert stats.tokens_generated == 0
-        assert stats.total_latency_ms == 0.0
 
     def test_avg_latency_no_requests(self) -> None:
         """Test avg latency with no requests."""
@@ -28,13 +28,13 @@ class TestDecodeStats:
 
     def test_avg_latency_calculation(self) -> None:
         """Test avg latency calculation."""
-        stats = DecodeStats(requests_total=10, total_latency_ms=500.0)
+        stats = DecodeStats(requests_total=4, total_latency_ms=200.0)
         assert stats.avg_latency_ms == 50.0
 
     def test_avg_tokens_per_request(self) -> None:
         """Test avg tokens per request."""
-        stats = DecodeStats(requests_total=10, tokens_generated=500)
-        assert stats.avg_tokens_per_request == 50.0
+        stats = DecodeStats(requests_total=4, tokens_generated=100)
+        assert stats.avg_tokens_per_request == 25.0
 
 
 class TestDecodeServer:
@@ -46,28 +46,23 @@ class TestDecodeServer:
         return KVBenchConfig(instance_id="test-decode")
 
     @pytest.fixture
-    def storage(self) -> MemoryStorageBackend:
-        """Create a test storage backend."""
-        return MemoryStorageBackend(max_size_bytes=10_000_000, name="test")
+    def kv(self) -> FakeKVStack:
+        """Create a fake KV stack."""
+        return FakeKVStack(chunk_size=16)
 
     @pytest.fixture
-    async def server(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> DecodeServer:
+    async def server(self, config: KVBenchConfig, kv: FakeKVStack) -> DecodeServer:
         """Create a test server instance."""
-        connector = LMCacheConnector(storage=storage, name="test")
-        server = DecodeServer(config=config, connector=connector)
+        server = DecodeServer(config=config, kv=kv)
         yield server
         await server.stop()
 
-    def test_init(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
+    def test_init(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
         """Test server initialization."""
-        connector = LMCacheConnector(storage=storage)
-        server = DecodeServer(config=config, connector=connector)
+        server = DecodeServer(config=config, kv=kv)
         assert server.instance_id == "test-decode"
         assert server.model_name == "llama-3.1-8b"
+        assert server.chunk_size == kv.chunk_size
 
     def test_generate_mock_token(self, server: DecodeServer) -> None:
         """Test mock token generation."""
@@ -75,7 +70,6 @@ class TestDecodeServer:
         token1 = server._generate_mock_token(1)
         assert token0 is not None
         assert token1 is not None
-        # Tokens should be different (usually)
         assert isinstance(token0, str)
 
     def test_calculate_decode_latency(self, server: DecodeServer) -> None:
@@ -89,9 +83,7 @@ class TestDecodeServer:
     async def test_generate_tokens(self, server: DecodeServer) -> None:
         """Test token generation."""
         tokens = []
-        async for token, latency in server.generate_tokens(
-            context_length=100, max_tokens=5
-        ):
+        async for token, latency in server.generate_tokens(context_length=100, max_tokens=5):
             tokens.append(token)
             assert latency > 0
 
@@ -114,6 +106,29 @@ class TestDecodeServer:
         assert server.stats.tokens_generated == 10
 
     @pytest.mark.asyncio
+    async def test_decode_reads_kv_through_stack(
+        self, server: DecodeServer, kv: FakeKVStack
+    ) -> None:
+        """Decode must look up (and read) the prompt's KV via the KV stack."""
+        prompt = "A moderately long prompt for the decode read path " * 8
+        request = ChatCompletionRequest(
+            model="llama-3.1-8b",
+            messages=[ChatMessage(role=MessageRole.USER, content=prompt)],
+            max_tokens=2,
+        )
+        # Pre-populate the cache as a prefill server would, tokenizing the
+        # same request text the decode server will see
+        tokens = server.processor.simulate_tokenize(request.prompt_text or "")
+        await kv.store(tokens)
+
+        await server.chat_completions(request)
+
+        assert kv.stats.lookups == 1
+        assert kv.stats.retrieves == 1
+        assert kv.stats.retrieved_tokens > 0
+        assert server.stats.cache_hits > 0
+
+    @pytest.mark.asyncio
     async def test_chat_completions_stream(self, server: DecodeServer) -> None:
         """Test streaming chat completion."""
         request = ChatCompletionRequest(
@@ -131,6 +146,8 @@ class TestDecodeServer:
         assert len(chunks) >= 5
         assert "data:" in chunks[0]
         assert "[DONE]" in chunks[-1]
+        assert server.stats.requests_total == 1
+        assert server.stats.requests_success == 1
 
     @pytest.mark.asyncio
     async def test_list_models(self, server: DecodeServer) -> None:
@@ -161,18 +178,16 @@ class TestDecodeServer:
         assert metrics.tokens_processed == 5
 
     @pytest.mark.asyncio
-    async def test_start_stop(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
-        """Test server start and stop."""
-        connector = LMCacheConnector(storage=storage)
-        server = DecodeServer(config=config, connector=connector)
+    async def test_start_stop(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
+        """Server start/stop does not close the app-owned KV stack."""
+        server = DecodeServer(config=config, kv=kv)
 
         await server.start()
         assert server._running is True
 
         await server.stop()
         assert server._running is False
+        assert kv.closed is False
 
     def test_repr(self, server: DecodeServer) -> None:
         """Test string representation."""

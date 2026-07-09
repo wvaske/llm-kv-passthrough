@@ -16,112 +16,33 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-class ResourceLimits(BaseModel):
-    """Resource limits for CPU memory and NVMe storage.
+class KVStackConfig(BaseModel):
+    """KV management stack configuration.
+
+    KV-Bench never performs storage I/O itself — all KV cache operations go
+    through a real KV management stack, and that stack's own application
+    configuration controls storage (backends, tier sizes, eviction).
+    KV-Bench deliberately has no storage settings of its own.
 
     Attributes:
-        cpu_memory_gb: Maximum CPU memory allocation in gigabytes.
-        nvme_storage_gb: Maximum NVMe storage allocation in gigabytes.
-        nvme_path: Path to NVMe storage directory.
-        memory_allocation: Memory allocation strategy.
+        stack: Which KV management stack to use. 'kvbm' is accepted here
+            but rejected at stack-creation time with the reason it is not
+            yet supported (see kvbench.kv.factory).
+        lmcache_config_file: Path to LMCache's own configuration file,
+            passed verbatim to LMCacheEngineConfig.from_file(). When unset,
+            LMCache is configured from its LMCACHE_* environment variables.
     """
 
-    cpu_memory_gb: float = Field(
-        default=8.0,
-        ge=0.1,
-        le=1024.0,
-        description="Maximum CPU memory allocation in GB",
+    stack: Literal["lmcache", "kvbm"] = Field(
+        default="lmcache",
+        description="KV management stack",
     )
-    nvme_storage_gb: float = Field(
-        default=100.0,
-        ge=0.0,
-        le=10000.0,
-        description="Maximum NVMe storage allocation in GB",
-    )
-    nvme_path: Path = Field(
-        default=Path("/var/lib/kvbench/nvme"),
-        description="Path to NVMe storage directory",
-    )
-    memory_allocation: Literal["greedy", "lazy", "pool"] = Field(
-        default="lazy",
-        description="Memory allocation strategy",
+    lmcache_config_file: Path | None = Field(
+        default=None,
+        description="Path to LMCache's own config file (LMCACHE_* env vars are used when unset)",
     )
 
-    @field_validator("nvme_path", mode="before")
-    @classmethod
-    def convert_nvme_path(cls, v: str | Path) -> Path:
-        """Convert string path to Path object."""
-        return Path(v) if isinstance(v, str) else v
-
-    @property
-    def cpu_memory_bytes(self) -> int:
-        """Return CPU memory limit in bytes."""
-        return int(self.cpu_memory_gb * 1024**3)
-
-    @property
-    def nvme_storage_bytes(self) -> int:
-        """Return NVMe storage limit in bytes."""
-        return int(self.nvme_storage_gb * 1024**3)
-
-
-class StorageConfig(BaseModel):
-    """Storage backend configuration.
-
-    Attributes:
-        backend_type: Type of storage backend to use.
-        redis_url: Redis connection URL for redis backend.
-        redis_cluster: Whether to use Redis cluster mode.
-        filesystem_path: Path for filesystem-based backends (NFS, Weka).
-        s3_endpoint: S3-compatible endpoint URL for MinIO.
-        s3_bucket: S3 bucket name for MinIO.
-        s3_access_key: S3 access key for authentication.
-        s3_secret_key: S3 secret key for authentication.
-        ceph_pool: Ceph pool name for Ceph backend.
-        ceph_conf: Path to Ceph configuration file.
-    """
-
-    backend_type: Literal["memory", "local_disk", "redis", "nfs", "ceph", "weka", "minio"] = Field(
-        default="memory",
-        description="Type of storage backend",
-    )
-    redis_url: str | None = Field(
-        default=None,
-        description="Redis connection URL (e.g., redis://localhost:6379)",
-    )
-    redis_cluster: bool = Field(
-        default=False,
-        description="Whether to use Redis cluster mode",
-    )
-    filesystem_path: Path | None = Field(
-        default=None,
-        description="Path for filesystem-based backends",
-    )
-    s3_endpoint: str | None = Field(
-        default=None,
-        description="S3-compatible endpoint URL",
-    )
-    s3_bucket: str | None = Field(
-        default=None,
-        description="S3 bucket name",
-    )
-    s3_access_key: str | None = Field(
-        default=None,
-        description="S3 access key",
-    )
-    s3_secret_key: str | None = Field(
-        default=None,
-        description="S3 secret key",
-    )
-    ceph_pool: str | None = Field(
-        default=None,
-        description="Ceph pool name",
-    )
-    ceph_conf: Path | None = Field(
-        default=None,
-        description="Path to Ceph configuration file",
-    )
-
-    @field_validator("filesystem_path", "ceph_conf", mode="before")
+    @field_validator("lmcache_config_file", mode="before")
     @classmethod
     def convert_path(cls, v: str | Path | None) -> Path | None:
         """Convert string path to Path object."""
@@ -130,57 +51,11 @@ class StorageConfig(BaseModel):
         return Path(v) if isinstance(v, str) else v
 
     @model_validator(mode="after")
-    def validate_backend_requirements(self) -> StorageConfig:
-        """Validate that required fields are set for each backend type."""
-        if self.backend_type == "redis" and not self.redis_url:
-            raise ValueError("redis_url is required when backend_type is 'redis'")
-        if self.backend_type in ("nfs", "weka") and not self.filesystem_path:
-            raise ValueError(
-                f"filesystem_path is required when backend_type is '{self.backend_type}'"
-            )
-        if self.backend_type == "minio":
-            if not self.s3_endpoint:
-                raise ValueError("s3_endpoint is required when backend_type is 'minio'")
-            if not self.s3_bucket:
-                raise ValueError("s3_bucket is required when backend_type is 'minio'")
-        if self.backend_type == "ceph" and not self.ceph_pool:
-            raise ValueError("ceph_pool is required when backend_type is 'ceph'")
+    def validate_config_file_exists(self) -> KVStackConfig:
+        """Fail loudly on a nonexistent LMCache config file."""
+        if self.lmcache_config_file is not None and not self.lmcache_config_file.exists():
+            raise ValueError(f"LMCache config file not found: {self.lmcache_config_file}")
         return self
-
-
-class ConnectorConfig(BaseModel):
-    """KV connector configuration for cache systems.
-
-    Attributes:
-        connector_type: Type of KV connector to use.
-        lmcache_chunk_size: Chunk size for LMCache connector.
-        lmcache_remote_url: Remote URL for LMCache server.
-        mooncake_endpoint: Endpoint for Mooncake connector.
-        dynamo_table: DynamoDB table name for Dynamo connector.
-    """
-
-    connector_type: Literal["lmcache", "mooncake", "dynamo", "mock"] = Field(
-        default="lmcache",
-        description="Type of KV connector",
-    )
-    lmcache_chunk_size: int = Field(
-        default=256,
-        ge=16,
-        le=4096,
-        description="Chunk size for LMCache (in tokens)",
-    )
-    lmcache_remote_url: str | None = Field(
-        default=None,
-        description="Remote URL for LMCache server (e.g., lm://localhost:8080)",
-    )
-    mooncake_endpoint: str | None = Field(
-        default=None,
-        description="Endpoint for Mooncake connector",
-    )
-    dynamo_table: str | None = Field(
-        default=None,
-        description="DynamoDB table name for Dynamo connector",
-    )
 
 
 class GPUEmulationConfig(BaseModel):
@@ -196,6 +71,18 @@ class GPUEmulationConfig(BaseModel):
         default="H100_SXM",
         description="Name of the GPU profile to emulate",
     )
+
+    @field_validator("gpu_profile")
+    @classmethod
+    def validate_gpu_profile(cls, v: str) -> str:
+        """Validate that the GPU profile exists in the registry."""
+        from kvbench.core.gpu_profiles import GPU_PROFILES
+
+        if v not in GPU_PROFILES:
+            available = ", ".join(sorted(GPU_PROFILES.keys()))
+            raise ValueError(f"Unknown GPU profile: {v!r}. Available profiles: {available}")
+        return v
+
     efficiency_factor: float = Field(
         default=0.7,
         ge=0.1,
@@ -207,6 +94,65 @@ class GPUEmulationConfig(BaseModel):
         ge=1,
         le=16,
         description="Tensor parallelism size",
+    )
+
+
+class TimingConfig(BaseModel):
+    """Timing emulation configuration.
+
+    Controls how GPU compute timing is simulated. Two modes available:
+    - Simple mode: Fixed ms per token (no GPU modeling)
+    - Roofline mode: Uses GPU/model profiles for realistic timing,
+      including tensor parallel (AllReduce) and pipeline parallel
+      (send/recv) communication overhead.
+
+    Attributes:
+        simple_mode: Use simple ms/token timing instead of roofline.
+        prefill_ms_per_token: Prefill latency per token (simple mode).
+        decode_ms_per_token: Decode latency per token (simple mode).
+        include_tp_communication: Include AllReduce timing in roofline mode.
+        include_pp_communication: Include pipeline send/recv in roofline mode.
+        pp_size: Pipeline parallelism size.
+        nvlink_bandwidth_gb_s: Interconnect bandwidth for communication
+            timing. Defaults to the GPU profile's NVLink bandwidth when unset.
+    """
+
+    simple_mode: bool = Field(
+        default=False,
+        description="Use simple ms/token timing instead of roofline model",
+    )
+    prefill_ms_per_token: float = Field(
+        default=0.1,
+        ge=0.001,
+        le=100.0,
+        description="Prefill latency per token in ms (simple mode)",
+    )
+    decode_ms_per_token: float = Field(
+        default=1.0,
+        ge=0.001,
+        le=100.0,
+        description="Decode latency per token in ms (simple mode)",
+    )
+    include_tp_communication: bool = Field(
+        default=True,
+        description="Include AllReduce timing in roofline mode",
+    )
+    include_pp_communication: bool = Field(
+        default=True,
+        description="Include pipeline send/recv in roofline mode",
+    )
+    pp_size: int = Field(
+        default=1,
+        ge=1,
+        le=16,
+        description="Pipeline parallelism size",
+    )
+    nvlink_bandwidth_gb_s: float | None = Field(
+        default=None,
+        ge=1.0,
+        le=2000.0,
+        description="Interconnect bandwidth in GB/s for communication timing "
+        "(GPU profile's NVLink bandwidth when unset)",
     )
 
 
@@ -240,6 +186,18 @@ class ServerConfig(BaseModel):
         default="llama-3.1-8b",
         description="Name of the model profile to emulate",
     )
+
+    @field_validator("model_profile")
+    @classmethod
+    def validate_model_profile(cls, v: str) -> str:
+        """Validate that the model profile exists in the registry."""
+        from kvbench.core.models import MODEL_PROFILES
+
+        if v not in MODEL_PROFILES:
+            available = ", ".join(sorted(MODEL_PROFILES.keys()))
+            raise ValueError(f"Unknown model profile: {v!r}. Available profiles: {available}")
+        return v
+
     workers: int = Field(
         default=1,
         ge=1,
@@ -270,6 +228,24 @@ class DistributedConfig(BaseModel):
         default_factory=list,
         description="List of decode server endpoints",
     )
+
+    @field_validator("prefill_endpoints", "decode_endpoints", mode="before")
+    @classmethod
+    def parse_endpoint_list(cls, v: object) -> object:
+        """Accept endpoint lists given as strings (env vars).
+
+        Supports JSON arrays ('["http://a:8000", "http://b:8000"]') and
+        comma-separated values ('http://a:8000,http://b:8000').
+        """
+        if isinstance(v, str):
+            import json
+
+            stripped = v.strip()
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return v
+
     registry_url: str | None = Field(
         default=None,
         description="URL of the service registry",
@@ -316,10 +292,9 @@ class KVBenchConfig(BaseModel):
 
     Attributes:
         instance_id: Unique identifier for this KV-Bench instance.
-        resources: Resource limits configuration.
-        storage: Storage backend configuration.
-        connector: KV connector configuration.
+        kv: KV management stack configuration.
         gpu: GPU emulation configuration.
+        timing: Timing emulation configuration.
         server: Server configuration.
         distributed: Distributed deployment configuration.
         metrics: Metrics configuration.
@@ -329,21 +304,17 @@ class KVBenchConfig(BaseModel):
         default="kvbench-0",
         description="Unique identifier for this instance",
     )
-    resources: ResourceLimits = Field(
-        default_factory=ResourceLimits,
-        description="Resource limits configuration",
-    )
-    storage: StorageConfig = Field(
-        default_factory=StorageConfig,
-        description="Storage backend configuration",
-    )
-    connector: ConnectorConfig = Field(
-        default_factory=ConnectorConfig,
-        description="KV connector configuration",
+    kv: KVStackConfig = Field(
+        default_factory=KVStackConfig,
+        description="KV management stack configuration",
     )
     gpu: GPUEmulationConfig = Field(
         default_factory=GPUEmulationConfig,
         description="GPU emulation configuration",
+    )
+    timing: TimingConfig = Field(
+        default_factory=TimingConfig,
+        description="Timing emulation configuration",
     )
     server: ServerConfig = Field(
         default_factory=ServerConfig,

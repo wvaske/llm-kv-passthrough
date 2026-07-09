@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from kvbench.connectors.lmcache import LMCacheConnector
 from kvbench.core.config import KVBenchConfig
 from kvbench.servers.combined import CombinedServer, CombinedStats
 from kvbench.servers.openai_compat import ChatCompletionRequest, ChatMessage, MessageRole
-from kvbench.storage.memory import MemoryStorageBackend
+from tests.fakes import FakeKVStack
 
 
 class TestCombinedStats:
@@ -41,28 +40,23 @@ class TestCombinedServer:
         return KVBenchConfig(instance_id="test-combined")
 
     @pytest.fixture
-    def storage(self) -> MemoryStorageBackend:
-        """Create a test storage backend."""
-        return MemoryStorageBackend(max_size_bytes=10_000_000, name="test")
+    def kv(self) -> FakeKVStack:
+        """Create a fake KV stack."""
+        return FakeKVStack(chunk_size=16)
 
     @pytest.fixture
-    async def server(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> CombinedServer:
+    async def server(self, config: KVBenchConfig, kv: FakeKVStack) -> CombinedServer:
         """Create a test server instance."""
-        connector = LMCacheConnector(storage=storage, name="test")
-        server = CombinedServer(config=config, connector=connector)
+        server = CombinedServer(config=config, kv=kv)
         yield server
         await server.stop()
 
-    def test_init(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
+    def test_init(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
         """Test server initialization."""
-        connector = LMCacheConnector(storage=storage)
-        server = CombinedServer(config=config, connector=connector)
+        server = CombinedServer(config=config, kv=kv)
         assert server.instance_id == "test-combined"
         assert server.model_name == "llama-3.1-8b"
+        assert server.chunk_size == kv.chunk_size
 
     @pytest.mark.asyncio
     async def test_chat_completions(self, server: CombinedServer) -> None:
@@ -82,9 +76,7 @@ class TestCombinedServer:
         assert server.stats.completion_tokens == 10
 
     @pytest.mark.asyncio
-    async def test_chat_completions_stream(
-        self, server: CombinedServer
-    ) -> None:
+    async def test_chat_completions_stream(self, server: CombinedServer) -> None:
         """Test streaming chat completion."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
@@ -104,12 +96,12 @@ class TestCombinedServer:
         assert server.stats.requests_success == 1
 
     @pytest.mark.asyncio
-    async def test_cache_behavior(self, server: CombinedServer) -> None:
-        """Test cache hit/miss behavior."""
+    async def test_cache_behavior(self, server: CombinedServer, kv: FakeKVStack) -> None:
+        """Test cache hit/miss behavior through the KV stack."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
             messages=[
-                ChatMessage(role=MessageRole.USER, content="Same prompt for caching")
+                ChatMessage(role=MessageRole.USER, content="Same prompt for caching " * 10)
             ],
             max_tokens=5,
         )
@@ -118,13 +110,17 @@ class TestCombinedServer:
         await server.chat_completions(request)
         first_hits = server.stats.cache_hits
         first_misses = server.stats.cache_misses
+        assert kv.stats.stores == 1
 
         # Second request with same prompt
         await server.chat_completions(request)
         second_hits = server.stats.cache_hits
 
-        # Should have more hits on second request
+        # Should have more hits on second request, and the cached prefix
+        # read through the stack
         assert second_hits > first_hits
+        assert server.stats.cache_misses >= first_misses
+        assert kv.stats.retrieves == 1
 
     @pytest.mark.asyncio
     async def test_list_models(self, server: CombinedServer) -> None:
@@ -156,22 +152,137 @@ class TestCombinedServer:
         assert metrics.requests_success == 1
 
     @pytest.mark.asyncio
-    async def test_start_stop(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
-        """Test server start and stop."""
-        connector = LMCacheConnector(storage=storage)
-        server = CombinedServer(config=config, connector=connector)
+    async def test_start_stop(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
+        """Server start/stop does not close the app-owned KV stack."""
+        server = CombinedServer(config=config, kv=kv)
 
         await server.start()
         assert server._running is True
 
         await server.stop()
         assert server._running is False
-        assert connector.is_closed is True
+        assert kv.closed is False
 
     def test_repr(self, server: CombinedServer) -> None:
         """Test string representation."""
         repr_str = repr(server)
         assert "CombinedServer" in repr_str
         assert "test-combined" in repr_str
+
+
+class TestCacheKeyCorrectness:
+    """Regression tests for cache-key correctness at the server level.
+
+    The original implementation derived cache keys from prompt *length*
+    only, so any two same-length prompts shared cache entries and hit-rate
+    metrics were meaningless.
+    """
+
+    @pytest.fixture
+    async def server(self) -> CombinedServer:
+        """Create a test server instance."""
+        server = CombinedServer(
+            config=KVBenchConfig(instance_id="test-cache"),
+            kv=FakeKVStack(chunk_size=64),
+        )
+        yield server
+        await server.stop()
+
+    @staticmethod
+    def _request(content: str) -> ChatCompletionRequest:
+        return ChatCompletionRequest(
+            model="llama-3.1-8b",
+            messages=[ChatMessage(role=MessageRole.USER, content=content)],
+            max_tokens=1,
+        )
+
+    @pytest.mark.asyncio
+    async def test_same_length_different_content_does_not_share_cache(
+        self, server: CombinedServer
+    ) -> None:
+        """Two same-length, different-content prompts must not hit each
+        other's cache entries."""
+        await server.chat_completions(self._request("A" * 2000))
+        hits_after_first = server.stats.cache_hits
+        misses_after_first = server.stats.cache_misses
+        assert hits_after_first == 0
+        assert misses_after_first > 0
+
+        await server.chat_completions(self._request("B" * 2000))
+        # No new hits: different content must miss
+        assert server.stats.cache_hits == hits_after_first
+        assert server.stats.cache_misses > misses_after_first
+
+    @pytest.mark.asyncio
+    async def test_identical_prompt_hits_cache(self, server: CombinedServer) -> None:
+        """A repeated identical prompt must hit the cache."""
+        await server.chat_completions(self._request("C" * 2000))
+        misses_after_first = server.stats.cache_misses
+
+        await server.chat_completions(self._request("C" * 2000))
+        assert server.stats.cache_hits > 0
+        assert server.stats.cache_misses <= misses_after_first + 1
+
+    @pytest.mark.asyncio
+    async def test_shared_prefix_hits_only_prefix_chunks(self, server: CombinedServer) -> None:
+        """A prompt sharing a long prefix with a previous one must hit the
+        prefix chunks and miss its own distinct suffix."""
+        prefix = "You are a helpful assistant. " * 200  # ~1450 tokens
+        await server.chat_completions(self._request(prefix + "Question one?"))
+        hits_first = server.stats.cache_hits
+
+        await server.chat_completions(self._request(prefix + "A different question two?"))
+        # Prefix chunks hit, suffix chunk misses
+        assert server.stats.cache_hits > hits_first
+        assert server.stats.cache_misses > 0
+
+
+class TestCombinedServerTiming:
+    """Timing configuration must flow into served latency."""
+
+    def _server(self, timing: dict | None = None, gpu: dict | None = None) -> CombinedServer:
+        data: dict = {"instance_id": "test-timing"}
+        if timing:
+            data["timing"] = timing
+        if gpu:
+            data["gpu"] = gpu
+        config = KVBenchConfig.model_validate(data)
+        return CombinedServer(config=config, kv=FakeKVStack(chunk_size=16))
+
+    def test_simple_timing_mode_used(self) -> None:
+        """simple_mode gives exact ms/token latencies."""
+        server = self._server(
+            timing={
+                "simple_mode": True,
+                "prefill_ms_per_token": 0.5,
+                "decode_ms_per_token": 2.0,
+            }
+        )
+        assert server._calculate_prefill_latency_ms(100) == pytest.approx(50.0)
+        assert server._calculate_decode_latency_ms(1000) == pytest.approx(2.0)
+
+    def test_tp_communication_increases_decode_latency(self) -> None:
+        """With TP > 1, enabling AllReduce timing makes decode slower."""
+        with_comm = self._server(
+            gpu={"tp_size": 4},
+            timing={"include_tp_communication": True},
+        )
+        without_comm = self._server(
+            gpu={"tp_size": 4},
+            timing={"include_tp_communication": False},
+        )
+        assert with_comm._calculate_decode_latency_ms(
+            1000
+        ) > without_comm._calculate_decode_latency_ms(1000)
+
+    def test_pp_communication_increases_prefill_latency(self) -> None:
+        """With PP > 1, enabling send/recv timing makes prefill slower."""
+        with_comm = self._server(
+            timing={"pp_size": 4, "include_pp_communication": True}
+        )
+        without_comm = self._server(
+            timing={"pp_size": 4, "include_pp_communication": False}
+        )
+        assert with_comm._calculate_prefill_latency_ms(
+            1000
+        ) > without_comm._calculate_prefill_latency_ms(1000)

@@ -4,24 +4,28 @@ Distributed mock LLM serving system for benchmarking KV cache management without
 
 ## Features
 
-- **Multi-host deployment** with shared storage (Redis, NFS, Weka, S3/MinIO, Mooncake)
+- **Real LMCache integration** — all KV cache operations go through the
+  actual LMCache engine (CPU-only, no GPU required); LMCache owns chunking,
+  hashing, tiering, eviction, and every byte of storage I/O
+- **Storage configured through LMCache's own application config** — CPU RAM,
+  local disk, and remote backends (Redis, Mooncake, ...) via LMCache's
+  config file or `LMCACHE_*` environment variables
 - **Disaggregated prefill/decode** architecture emulation
-- **Pluggable KV backends** (LMCache, Mooncake connectors)
 - **OpenAI-compatible API** for easy integration
-- **GPU timing emulation** based on real hardware specs
+- **GPU timing emulation** based on real hardware specs (roofline model)
 - **GenAI-Perf compatible** for standardized benchmarking
 
 ## Installation
 
 ```bash
-# Basic installation
-pip install kvbench
+# With the LMCache KV management stack (required to run servers)
+pip install "kvbench[lmcache]"
 
 # With development dependencies
-pip install kvbench[dev]
+pip install "kvbench[dev]"
 
 # With all optional dependencies
-pip install kvbench[all]
+pip install "kvbench[all]"
 ```
 
 ## Quick Start
@@ -29,11 +33,11 @@ pip install kvbench[all]
 ### Start the Server
 
 ```bash
-# Basic server (in-memory storage)
+# Basic server (LMCache with default CPU-memory tier)
 kvbench serve --model llama-3.1-8b --gpu H100_SXM
 
-# With Redis storage
-kvbench serve --model llama-3.1-8b --storage redis
+# With an LMCache config file selecting storage tiers (disk, Redis, ...)
+kvbench serve --model llama-3.1-8b --lmcache-config lmcache.yaml
 
 # List available profiles
 kvbench list-profiles
@@ -76,8 +80,11 @@ export KVBENCH_SERVER__HOST=0.0.0.0
 export KVBENCH_SERVER__PORT=8000
 export KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
 export KVBENCH_GPU__GPU_PROFILE=H100_SXM
-export KVBENCH_STORAGE__BACKEND_TYPE=redis
-export KVBENCH_STORAGE__REDIS_URL=redis://localhost:6379
+
+# Storage is configured through LMCache's own environment variables
+export LMCACHE_CHUNK_SIZE=256
+export LMCACHE_LOCAL_DISK="file:///var/lib/lmcache/"
+export LMCACHE_MAX_LOCAL_DISK_SIZE=100
 ```
 
 ### YAML Configuration
@@ -95,9 +102,19 @@ gpu:
   gpu_profile: H100_SXM
   efficiency_factor: 0.7
 
-storage:
-  backend_type: redis
-  redis_url: redis://localhost:6379
+kv:
+  stack: lmcache
+  lmcache_config_file: lmcache.yaml   # LMCache's own config controls storage
+```
+
+```yaml
+# lmcache.yaml — LMCache application configuration
+chunk_size: 256
+local_cpu: true
+max_local_cpu_size: 4.0
+local_disk: "file:///var/lib/lmcache/"
+max_local_disk_size: 100.0
+# remote_url: "redis://cache-host:6379"
 ```
 
 ```bash
@@ -106,14 +123,16 @@ kvbench serve --config config.yaml
 
 ## Supported GPU Profiles
 
+TFLOPS values are dense (non-sparsity) tensor-core numbers for consistent cross-GPU comparisons.
+
 | Profile | BF16 TFLOPS | HBM Bandwidth | HBM Capacity |
 |---------|-------------|---------------|--------------|
-| H100_SXM | 1979 | 3.35 TB/s | 80 GB |
-| H100_PCIe | 1513 | 2.0 TB/s | 80 GB |
-| H200_SXM | 1979 | 4.8 TB/s | 141 GB |
+| H100_SXM | 989.5 | 3.35 TB/s | 80 GB |
+| H100_PCIe | 756.5 | 2.0 TB/s | 80 GB |
+| H200_SXM | 989.5 | 4.8 TB/s | 141 GB |
 | A100_SXM | 312 | 2.0 TB/s | 80 GB |
-| L4 | 121 | 0.3 TB/s | 24 GB |
-| L40S | 362 | 0.864 TB/s | 48 GB |
+| L4 | 60.5 | 0.3 TB/s | 24 GB |
+| L40S | 181.05 | 0.864 TB/s | 48 GB |
 
 ## Supported Model Profiles
 
@@ -127,17 +146,15 @@ kvbench serve --config config.yaml
 | mistral-7b | 32 | 4096 | 8 | ~7B |
 | mixtral-8x7b | 32 | 4096 | 8 | ~47B |
 
-## Storage Backends
+## Storage
 
-| Backend | Description | Use Case |
-|---------|-------------|----------|
-| `memory` | In-memory with LRU | Testing, development |
-| `local_disk` | Local NVMe storage | Single-node production |
-| `redis` | Redis/Cluster | Multi-node shared cache |
-| `s3` | S3/MinIO | Cloud deployments |
-| `nfs` | NFS filesystem | On-premise clusters |
-| `weka` | Weka storage | HPC environments |
-| `mooncake` | Mooncake engine | Disaggregated serving |
+KV-Bench never performs storage I/O itself. All KV cache operations go
+through the **real LMCache engine**, and storage — CPU-memory tier, local
+disk tier, remote backends — is selected and tuned entirely in LMCache's
+own application configuration (`--lmcache-config` file or `LMCACHE_*`
+environment variables). Anything LMCache supports as a backend, KV-Bench
+benchmarks; the storage under test sits under the KV management stack,
+exactly as it does in a real vLLM + LMCache deployment.
 
 ## Architecture
 
@@ -159,12 +176,14 @@ kvbench serve --config config.yaml
                     └───────────┬───────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      KV Cache Connector                         │
+│              LMCache (real engine — KV management)              │
+│        chunking · hashing · tiering · eviction · all I/O        │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Storage Backend                            │
+│     Storage under test: CPU RAM → local disk → remote (...)     │
+│           configured via LMCache's own application config       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -200,12 +219,12 @@ mypy src/kvbench
 kvbench/
 ├── src/kvbench/
 │   ├── core/           # Configuration, GPU/model profiles
-│   ├── connectors/     # LMCache, Mooncake connectors
-│   ├── storage/        # Storage backends (7 implementations)
+│   ├── kv/             # KV management stack integration (real LMCache)
 │   ├── servers/        # HTTP servers, OpenAI API
 │   └── cli/            # Command-line interface
 ├── tests/
 │   ├── unit/           # Unit tests
+│   ├── integration/    # Real-LMCache integration tests
 │   └── e2e/            # End-to-end tests
 ├── docs/               # MkDocs documentation
 ├── deployment/

@@ -1,257 +1,92 @@
-# KV Cache Connectors
+# KV Management Stacks
 
-Connectors bridge the gap between the inference server and storage backends, providing cache key management, chunking, and protocol compatibility.
+KV-Bench integrates with real KV cache management stacks through the
+`KVStack` interface (`src/kvbench/kv/`). Servers speak in token sequences;
+the stack owns chunking, hashing, tiering, and all storage I/O. There are
+no mock or passthrough stacks — the benchmark measures real KV management
+code paths driving real storage.
 
-## Connector Architecture
+## Interface
 
-```
-┌─────────────────────────────────────────┐
-│            Inference Server             │
-│         (Prefill / Decode)              │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│              Connector                  │
-│  - Key generation                       │
-│  - Chunking / Dechunking                │
-│  - Protocol translation                 │
-│  - Statistics collection                │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│           Storage Backend               │
-└─────────────────────────────────────────┘
+```python
+class KVStack:
+    async def lookup(tokens: list[int]) -> int      # cached prefix length
+    async def store(tokens, skip_leading=0) -> None  # write path
+    async def retrieve(tokens: list[int]) -> int     # read path
 ```
 
-## LMCache Connector
+The servers use these three operations the way vLLM uses LMCache:
 
-The LMCache connector provides compatibility with [LMCache](https://github.com/LMCache/LMCache) protocol.
+1. **Prefill**: `lookup` the prompt's tokens → `retrieve` the cached prefix
+   (storage read) → simulate compute for the uncached suffix → `store` the
+   new KV (storage write, cached prefix masked out).
+2. **Decode**: `lookup` + `retrieve` the prompt's KV before generating, so
+   storage read latency appears in TTFT — the disaggregated read path.
 
-### Configuration
+## LMCache (supported)
+
+`LMCacheStack` drives the real `lmcache` engine (v1 API). It runs CPU-only:
+LMCache's platform layer detects the absence of CUDA and uses its CPU
+device stub, and KV-Bench supplies mock GPU-side tensors through LMCache's
+`GPUConnectorInterface`. Everything downstream — memory objects, tiering,
+disk and remote I/O — is unmodified LMCache code.
+
+Configuration is pass-through: point `kv.lmcache_config_file` (or
+`--lmcache-config`) at LMCache's own config file, or use `LMCACHE_*`
+environment variables. KV-Bench adds no storage settings of its own.
 
 ```yaml
-connector:
-  connector_type: lmcache
-  lmcache_chunk_size: 256  # Tokens per chunk
-  lmcache_remote_url: null  # Optional remote LMCache server
+# kvbench config
+kv:
+  stack: lmcache
+  lmcache_config_file: lmcache.yaml
 ```
 
-```bash
-export KVBENCH_CONNECTOR__CONNECTOR_TYPE=lmcache
-export KVBENCH_CONNECTOR__LMCACHE_CHUNK_SIZE=256
-kvbench serve
-```
+Install with `pip install "kvbench[lmcache]"`.
 
-### Key Format
+## KVBM
 
-LMCache uses a hierarchical key format:
+NVIDIA Dynamo's [KV Block Manager](https://docs.nvidia.com/dynamo/latest/architecture/kvbm_components.html)
+(KVBM) is the second stack on the roadmap. `stack: kvbm` is accepted in
+configuration but rejected at startup with the reason below — there is
+deliberately no stub implementation.
 
-```
-{model_name}/{world_size}/{worker_id}/{chunk_hash}
-```
+### Why KVBM is not yet supported
 
-Example:
-```
-llama-3.1-8b/1/0/a1b2c3d4e5f6
-```
+Verified empirically against `kvbm` 1.2.1 from PyPI on a CPU-only host
+(July 2026):
 
-### Chunking
+1. **The data plane requires the CUDA driver.** `KvbmWorker` — the
+   component that registers KV memory and executes all tier transfers
+   (device → host → disk → remote, via NIXL) — panics at construction
+   attempting to dynamically load `libcuda.so`, even when handed CPU
+   tensors. Without a worker, no bytes move.
+2. **The control plane cannot stand alone.** `BlockManager` requires a
+   `KvbmLeader`, and the leader's initialization barrier waits for
+   workers to register — which circles back to requirement 1.
+3. **No escape hatch.** The `DYN_KVBM_*` configuration surface (extracted
+   from the shipped binary) tunes cache sizes, disk paths, and transfer
+   batching, but offers no CPU-device or mock-transfer mode. NVIDIA's
+   documentation describes the CPU (G2) and disk (G3) tiers only as
+   offload targets fed from GPU memory (G1).
 
-KV cache is stored in fixed-size chunks:
+By contrast, LMCache ships a CPU platform stub and a pluggable
+GPU-connector interface, which is exactly the seam KV-Bench mocks.
 
-```python
-# 256-token chunks
-chunk_size = 256
+### What would unblock it
 
-# 1000 token sequence = 4 chunks
-# Chunk 0: tokens 0-255
-# Chunk 1: tokens 256-511
-# Chunk 2: tokens 512-767
-# Chunk 3: tokens 768-999 (partial)
-```
+- **Upstream**: a CPU device layout / mock transfer backend in KVBM's
+  worker, letting host memory stand in for G1 the way KV-Bench's
+  `MockGPUConnector` does for LMCache. KVBM's design (per-tier block
+  pools behind one lifecycle API) is compatible with this; the current
+  wheel just hard-binds the transfer engine to CUDA.
+- **Alternatively**: a GPU-enabled KV-Bench deployment mode, where KVBM
+  runs its real data plane on a GPU node while KV-Bench still simulates
+  inference timing. This trades away KV-Bench's GPU-less premise and is
+  only worth building against a testable environment.
 
-### Prefix Caching
-
-LMCache supports prefix caching for shared prompts:
-
-```
-Request 1: "What is the capital of France?"
-  → Stores chunks for full prompt
-
-Request 2: "What is the capital of Germany?"
-  → Hits cache for "What is the capital of "
-  → Only processes " Germany?" tokens
-```
-
-### Integration with Real LMCache
-
-Connect to a real LMCache server:
-
-```bash
-# Start LMCache server
-lmcache_server localhost:8080
-
-# Connect KV-Bench
-export KVBENCH_CONNECTOR__LMCACHE_REMOTE_URL=lm://localhost:8080
-kvbench serve
-```
-
-## Mooncake Connector
-
-The Mooncake connector integrates with the Mooncake transfer engine for disaggregated inference.
-
-### Configuration
-
-```yaml
-connector:
-  connector_type: mooncake
-  mooncake_local_hostname: node-1
-  mooncake_metadata_server: etcd://etcd:2379
-```
-
-```bash
-export KVBENCH_CONNECTOR__CONNECTOR_TYPE=mooncake
-export KVBENCH_CONNECTOR__MOONCAKE_LOCAL_HOSTNAME=$(hostname)
-kvbench serve
-```
-
-### Transfer Modes
-
-Mooncake supports multiple transfer protocols:
-
-| Protocol | Latency | Use Case |
-|----------|---------|----------|
-| RDMA | ~10μs | Same datacenter |
-| TCP | ~100μs | Cross-datacenter |
-
-### Zero-Copy Transfers
-
-Mooncake enables zero-copy KV cache transfers:
-
-```
-Prefill Server                    Decode Server
-     │                                 │
-     │  1. Compute KV cache            │
-     │                                 │
-     │  2. Register with Mooncake      │
-     │         ─────────────────────►  │
-     │                                 │
-     │  3. RDMA read                   │
-     │         ◄─────────────────────  │
-     │                                 │
-     │                          4. Decode
-```
-
-## Custom Connectors
-
-Create custom connectors by implementing the base interface:
-
-```python
-from kvbench.connectors.base import BaseConnector, ConnectorStats
-
-class CustomConnector(BaseConnector):
-    """Custom KV cache connector."""
-
-    def __init__(self, storage: StorageBackend, name: str = "custom"):
-        super().__init__(storage=storage, name=name)
-        self._stats = ConnectorStats()
-
-    @property
-    def stats(self) -> ConnectorStats:
-        return self._stats
-
-    async def store(self, key: str, num_tokens: int) -> None:
-        """Store KV cache data."""
-        # Generate cache data
-        data = self._generate_kv_data(num_tokens)
-
-        # Store in backend
-        await self.storage.put(key, data)
-
-        # Update stats
-        self._stats.stores += 1
-        self._stats.store_bytes += len(data)
-
-    async def load(self, key: str) -> bytes | None:
-        """Load KV cache data."""
-        data = await self.storage.get(key)
-
-        self._stats.loads += 1
-        if data is not None:
-            self._stats.hits += 1
-            self._stats.load_bytes += len(data)
-        else:
-            self._stats.misses += 1
-
-        return data
-
-    async def exists(self, key: str) -> bool:
-        """Check if key exists."""
-        return await self.storage.exists(key)
-
-    async def delete(self, key: str) -> bool:
-        """Delete a key."""
-        return await self.storage.delete(key)
-
-    async def close(self) -> None:
-        """Cleanup resources."""
-        pass
-```
-
-Register the custom connector:
-
-```python
-from kvbench.connectors import register_connector
-
-register_connector("custom", CustomConnector)
-```
-
-## Connector Statistics
-
-All connectors track operational statistics:
-
-```python
-@dataclass
-class ConnectorStats:
-    stores: int = 0          # Number of store operations
-    loads: int = 0           # Number of load operations
-    hits: int = 0            # Cache hits
-    misses: int = 0          # Cache misses
-    store_bytes: int = 0     # Total bytes stored
-    load_bytes: int = 0      # Total bytes loaded
-
-    @property
-    def hit_rate(self) -> float:
-        """Calculate cache hit rate percentage."""
-        total = self.hits + self.misses
-        return (self.hits / total * 100) if total > 0 else 0.0
-```
-
-Access statistics via API:
-
-```bash
-curl http://localhost:8000/metrics
-```
-
-```json
-{
-  "connector": {
-    "stores": 1000,
-    "loads": 5000,
-    "hits": 4500,
-    "misses": 500,
-    "hit_rate": 90.0,
-    "store_bytes": 512000000,
-    "load_bytes": 2304000000
-  }
-}
-```
-
-## Best Practices
-
-1. **Chunk Size**: Use 256-512 tokens for optimal prefix sharing
-2. **Key Design**: Include model name and version in keys
-3. **Statistics**: Monitor hit rate to tune cache size
-4. **Cleanup**: Implement TTL or LRU eviction for long-running deployments
+KVBM's storage-relevant configuration is, like LMCache's, its own:
+`DYN_KVBM_CPU_CACHE_GB`, `DYN_KVBM_DISK_CACHE_GB`,
+`DYN_KVBM_DISK_CACHE_DIR`, etc. — when the integration lands, KV-Bench
+will pass that surface through unmodified, mirroring the LMCache
+approach.

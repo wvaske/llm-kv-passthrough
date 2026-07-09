@@ -507,3 +507,83 @@ class TestMakeMetadataKey:
         assert parsed["chunk_hash"] == "abc123"
         assert parsed["worker_id"] == 2
         assert parsed["suffix"] == "meta"
+
+
+class TestTokenizePrefixCaching:
+    """Regression tests for the cache-correctness properties of tokenization.
+
+    These properties are what make prefix-cache hit rates meaningful:
+    tokenization must be content-based (same-length different text produces
+    different tokens) and prefix-stable (shared text prefixes produce shared
+    token prefixes).
+    """
+
+    def test_tokenize_is_content_based(self) -> None:
+        """Same-length, different-content texts must not share tokens."""
+        processor = TokenProcessor()
+        tokens_a = processor.simulate_tokenize("A" * 100)
+        tokens_b = processor.simulate_tokenize("B" * 100)
+        assert tokens_a != tokens_b
+
+    def test_tokenize_is_prefix_stable(self) -> None:
+        """Texts sharing a prefix must produce token streams sharing a prefix."""
+        processor = TokenProcessor()
+        shared_prefix = "You are a helpful assistant. Answer concisely. " * 40
+        tokens_a = processor.simulate_tokenize(shared_prefix + "What is the capital of France?")
+        tokens_b = processor.simulate_tokenize(shared_prefix + "Explain KV caches in one line.")
+
+        shared = 0
+        for a, b in zip(tokens_a, tokens_b, strict=False):
+            if a != b:
+                break
+            shared += 1
+
+        # The shared text prefix spans ~len/4 tokens; allow the boundary token
+        expected_prefix_tokens = len(shared_prefix.encode()) // 4
+        assert shared >= expected_prefix_tokens - 1
+
+    def test_tokenize_linear_time_on_large_input(self) -> None:
+        """Tokenizing a large prompt must be fast (O(n), not O(n^2))."""
+        import time
+
+        processor = TokenProcessor()
+        text = "word " * 20_000  # 100 KB
+        start = time.monotonic()
+        tokens = processor.simulate_tokenize(text)
+        elapsed = time.monotonic() - start
+        assert len(tokens) == 25_000
+        assert elapsed < 1.0
+
+    def test_chunk_hashes_are_prefix_chained(self) -> None:
+        """Identical chunks after different prefixes must hash differently."""
+        processor = TokenProcessor(chunk_size=4)
+        seq_a = [1, 2, 3, 4, 9, 9, 9, 9]
+        seq_b = [5, 6, 7, 8, 9, 9, 9, 9]
+
+        chunks_a = processor.chunk_tokens_with_metadata(seq_a)
+        chunks_b = processor.chunk_tokens_with_metadata(seq_b)
+
+        # Same second-chunk content...
+        assert chunks_a[1].tokens == chunks_b[1].tokens
+        # ...but different hash because the prefix differs
+        assert chunks_a[1].chunk_hash != chunks_b[1].chunk_hash
+
+    def test_chunk_hashes_shared_prefix_match(self) -> None:
+        """Chunks in a shared prefix must hash identically across sequences."""
+        processor = TokenProcessor(chunk_size=4)
+        seq_a = [1, 2, 3, 4, 5, 6, 7, 8, 100, 101]
+        seq_b = [1, 2, 3, 4, 5, 6, 7, 8, 200, 201]
+
+        chunks_a = processor.chunk_tokens_with_metadata(seq_a)
+        chunks_b = processor.chunk_tokens_with_metadata(seq_b)
+
+        assert chunks_a[0].chunk_hash == chunks_b[0].chunk_hash
+        assert chunks_a[1].chunk_hash == chunks_b[1].chunk_hash
+        assert chunks_a[2].chunk_hash != chunks_b[2].chunk_hash
+
+    def test_is_full_reflects_partial_final_chunk(self) -> None:
+        """A partial final chunk must not report itself as full."""
+        processor = TokenProcessor(chunk_size=4)
+        chunks = processor.chunk_tokens_with_metadata(list(range(6)))
+        assert chunks[0].is_full is True
+        assert chunks[1].is_full is False

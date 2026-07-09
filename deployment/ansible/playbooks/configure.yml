@@ -31,6 +31,16 @@
         validate: "{{ kvbench_home | default('/opt/kvbench') }}/venv/bin/python -c 'import yaml; yaml.safe_load(open(\"%s\"))'"
       notify: Restart kvbench
 
+    - name: Deploy updated LMCache configuration (owns all storage settings)
+      template:
+        src: ../templates/lmcache.yaml.j2
+        dest: "{{ kvbench_config_dir }}/lmcache.yaml"
+        owner: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        mode: '0640'
+        validate: "{{ kvbench_home | default('/opt/kvbench') }}/venv/bin/python -c 'import yaml; yaml.safe_load(open(\"%s\"))'"
+      notify: Restart kvbench
+
     - name: Verify configuration syntax
       command: >
         {{ kvbench_home | default('/opt/kvbench') }}/venv/bin/python -c

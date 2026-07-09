@@ -5,21 +5,21 @@ This module implements a mock prefill server that emulates the prefill phase
 of LLM inference. The prefill phase processes all input tokens in parallel
 and is typically compute-bound.
 
-The server provides an OpenAI-compatible API and simulates:
-- Token chunking and hash computation
-- Cache lookups and stores
-- Prefill latency based on GPU/model configuration
+The server provides an OpenAI-compatible API. KV cache lookups, stores,
+and retrievals go through the configured KV management stack (LMCache),
+which owns chunking, hashing, and all storage I/O; the server simulates
+tokenization and prefill compute latency from the GPU/model configuration.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -29,10 +29,11 @@ from kvbench.servers.openai_compat import (
     ModelInfo,
     ModelList,
 )
+from kvbench.timing import create_timing_strategy
 
 if TYPE_CHECKING:
-    from kvbench.connectors.base import KVConnector
     from kvbench.core.config import KVBenchConfig
+    from kvbench.kv.base import KVStack
 
 logger = logging.getLogger(__name__)
 
@@ -72,31 +73,35 @@ class PrefillStats:
 class PrefillServer:
     """Mock prefill server for KV cache benchmarking.
 
-    The prefill server processes the input prompt, chunks the tokens,
-    and stores KV cache entries. It simulates compute-bound prefill
+    The prefill server tokenizes the input prompt and stores KV cache
+    through the KV management stack. It simulates compute-bound prefill
     latency based on the GPU and model configuration.
 
     Attributes:
         config: KV-Bench configuration.
-        connector: KV cache connector.
+        kv: KV management stack for cache operations.
         stats: Server statistics.
     """
 
     def __init__(
         self,
         config: KVBenchConfig,
-        connector: KVConnector,
+        kv: KVStack,
     ) -> None:
         """Initialize the prefill server.
 
         Args:
             config: KV-Bench configuration.
-            connector: KV cache connector for storing cache entries.
+            kv: Started KV management stack for cache operations.
         """
         self.config = config
-        self.connector = connector
+        self.kv = kv
         self.stats = PrefillStats()
         self._running = False
+
+        self.chunk_size = kv.chunk_size
+        self.processor = TokenProcessor(chunk_size=self.chunk_size)
+        self.timing = create_timing_strategy(config)
 
     @property
     def model_name(self) -> str:
@@ -111,7 +116,8 @@ class PrefillServer:
     def _simulate_tokenize(self, text: str) -> list[int]:
         """Simulate tokenization of text.
 
-        Uses a simple approximation: ~4 characters per token.
+        Content-based and prefix-stable: shared text prefixes produce shared
+        token prefixes, which is what makes prefix caching measurable.
 
         Args:
             text: The text to tokenize.
@@ -119,64 +125,19 @@ class PrefillServer:
         Returns:
             List of simulated token IDs.
         """
-        # Approximate: 4 chars per token, use hash for IDs
-        num_tokens = max(1, len(text) // 4)
-        return list(range(num_tokens))
+        return self.processor.simulate_tokenize(text)
 
-    def _chunk_tokens(self, tokens: list[int], chunk_size: int) -> list[list[int]]:
-        """Split tokens into chunks.
+    def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
+        """Calculate simulated prefill latency using the configured timing strategy.
 
         Args:
-            tokens: List of token IDs.
-            chunk_size: Number of tokens per chunk.
-
-        Returns:
-            List of token chunks.
-        """
-        chunks = []
-        for i in range(0, len(tokens), chunk_size):
-            chunks.append(tokens[i : i + chunk_size])
-        return chunks
-
-    def _compute_chunk_hash(self, tokens: list[int]) -> str:
-        """Compute a hash for a token chunk.
-
-        Args:
-            tokens: List of token IDs.
-
-        Returns:
-            SHA-256 hash of the tokens.
-        """
-        data = ",".join(str(t) for t in tokens).encode()
-        return hashlib.sha256(data).hexdigest()
-
-    def _calculate_prefill_latency_ms(self, num_tokens: int) -> float:
-        """Calculate simulated prefill latency.
-
-        Prefill is compute-bound. Latency scales roughly linearly
-        with token count for small sequences, quadratically for
-        attention at longer sequences.
-
-        Args:
-            num_tokens: Number of tokens to process.
+            num_tokens: Number of new tokens to process.
+            context_tokens: Already-cached prefix tokens they attend to.
 
         Returns:
             Estimated prefill latency in milliseconds.
         """
-        # Base latency: ~0.1ms per token for H100-class GPU
-        # This is a simplified model; actual latency depends on
-        # batch size, sequence length, and model architecture
-        efficiency = self.config.gpu.efficiency_factor
-        tp_size = self.config.gpu.tp_size
-
-        # Base compute time per token (ms)
-        base_latency_per_token = 0.1 / efficiency
-
-        # Scale with tensor parallelism
-        scaled_latency = base_latency_per_token / tp_size
-
-        # Total latency (simplified linear model)
-        return scaled_latency * num_tokens
+        return self.timing.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
 
     async def process_prefill(
         self,
@@ -195,40 +156,30 @@ class PrefillServer:
         # Get prompt text
         prompt = request.prompt_text or ""
 
-        # Simulate tokenization
-        tokens = self._simulate_tokenize(prompt)
+        # Simulate tokenization (content-based, prefix-stable)
+        tokens = self.processor.simulate_tokenize(prompt)
         num_tokens = len(tokens)
 
-        # Get chunk size from connector config if available
-        chunk_size = 256
-        if hasattr(self.connector, "config"):
-            chunk_size = getattr(self.connector.config, "chunk_size", 256)
+        # Ask the KV stack how much of the sequence is already cached
+        hit_tokens = await self.kv.lookup(tokens)
+        if hit_tokens:
+            # Read the cached prefix through the stack (the storage read path)
+            await self.kv.retrieve(tokens[:hit_tokens])
 
-        # Chunk tokens
-        chunks = self._chunk_tokens(tokens, chunk_size)
+        miss_tokens = num_tokens - hit_tokens
+        if miss_tokens:
+            # Simulate prefill compute for the uncached suffix, which
+            # attends to the cached prefix
+            prefill_latency = self._calculate_prefill_latency_ms(
+                miss_tokens, context_tokens=hit_tokens
+            )
+            await asyncio.sleep(prefill_latency / 1000)
 
-        cache_hits = 0
-        cache_misses = 0
-        total_prefill_latency = 0.0
+            # Store the new KV through the stack (skipping the cached prefix)
+            await self.kv.store(tokens, skip_leading=hit_tokens)
 
-        for chunk in chunks:
-            chunk_hash = self._compute_chunk_hash(chunk)
-
-            # Check cache
-            if await self.connector.exists(chunk_hash):
-                cache_hits += 1
-                logger.debug(f"Cache hit for chunk {chunk_hash[:16]}...")
-            else:
-                cache_misses += 1
-                logger.debug(f"Cache miss for chunk {chunk_hash[:16]}...")
-
-                # Simulate prefill latency for cache miss
-                chunk_latency = self._calculate_prefill_latency_ms(len(chunk))
-                total_prefill_latency += chunk_latency
-                await asyncio.sleep(chunk_latency / 1000)
-
-                # Store in cache
-                await self.connector.store(chunk_hash, len(chunk))
+        cache_hits = hit_tokens // self.chunk_size
+        cache_misses = (miss_tokens + self.chunk_size - 1) // self.chunk_size
 
         elapsed_ms = (time.time() - start_time) * 1000
         return num_tokens, cache_hits, cache_misses, elapsed_ms
@@ -330,9 +281,8 @@ class PrefillServer:
         logger.info(f"Prefill server {self.instance_id} started")
 
     async def stop(self) -> None:
-        """Stop the server."""
+        """Stop the server (the KV stack's lifecycle is owned by the app)."""
         self._running = False
-        await self.connector.close()
         logger.info(f"Prefill server {self.instance_id} stopped")
 
     def __repr__(self) -> str:

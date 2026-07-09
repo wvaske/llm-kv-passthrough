@@ -1,129 +1,70 @@
-# KV-Bench Distributed Docker Compose
-# Disaggregated deployment with prefill/decode separation
-version: "3.8"
+# Disaggregated KV-Bench: proxy -> prefill + decode fleets sharing a
+# Redis remote tier through LMCache. The prefill servers write KV cache
+# to Redis via LMCache; the decode servers read it back — the shared
+# storage path under test.
+x-kvbench-common: &kvbench-common
+  image: kvbench:latest
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  depends_on:
+    - redis
+
+x-lmcache-env: &lmcache-env
+  KVBENCH_SERVER__MODEL_PROFILE: llama-3.1-8b
+  KVBENCH_GPU__GPU_PROFILE: H100_SXM
+  LMCACHE_CHUNK_SIZE: "256"
+  LMCACHE_MAX_LOCAL_CPU_SIZE: "2"
+  # Shared remote tier — all servers hit the same Redis
+  LMCACHE_REMOTE_URL: "redis://redis:6379"
+  LMCACHE_REMOTE_SERDE: "naive"
 
 services:
-  # Redis for shared KV cache storage
   redis:
     image: redis:7-alpine
-    container_name: kvbench-redis
+    command: ["redis-server", "--maxmemory", "8gb", "--maxmemory-policy", "allkeys-lru"]
     ports:
       - "6379:6379"
-    volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
 
-  # Prefill Server 1
   prefill-1:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    container_name: kvbench-prefill-1
+    <<: *kvbench-common
     environment:
-      - KVBENCH_INSTANCE_ID=prefill-1
-      - KVBENCH_SERVER__SERVER_TYPE=prefill
-      - KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
-      - KVBENCH_GPU__GPU_PROFILE=H100_SXM
-      - KVBENCH_STORAGE__BACKEND_TYPE=redis
-      - KVBENCH_STORAGE__REDIS_URL=redis://redis:6379
-    ports:
-      - "8001:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+      <<: *lmcache-env
+      KVBENCH_INSTANCE_ID: prefill-1
+      KVBENCH_SERVER__SERVER_TYPE: prefill
 
-  # Prefill Server 2
   prefill-2:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    container_name: kvbench-prefill-2
+    <<: *kvbench-common
     environment:
-      - KVBENCH_INSTANCE_ID=prefill-2
-      - KVBENCH_SERVER__SERVER_TYPE=prefill
-      - KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
-      - KVBENCH_GPU__GPU_PROFILE=H100_SXM
-      - KVBENCH_STORAGE__BACKEND_TYPE=redis
-      - KVBENCH_STORAGE__REDIS_URL=redis://redis:6379
-    ports:
-      - "8002:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+      <<: *lmcache-env
+      KVBENCH_INSTANCE_ID: prefill-2
+      KVBENCH_SERVER__SERVER_TYPE: prefill
 
-  # Decode Server 1
   decode-1:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    container_name: kvbench-decode-1
+    <<: *kvbench-common
     environment:
-      - KVBENCH_INSTANCE_ID=decode-1
-      - KVBENCH_SERVER__SERVER_TYPE=decode
-      - KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
-      - KVBENCH_GPU__GPU_PROFILE=H100_SXM
-      - KVBENCH_STORAGE__BACKEND_TYPE=redis
-      - KVBENCH_STORAGE__REDIS_URL=redis://redis:6379
-    ports:
-      - "8101:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+      <<: *lmcache-env
+      KVBENCH_INSTANCE_ID: decode-1
+      KVBENCH_SERVER__SERVER_TYPE: decode
 
-  # Decode Server 2
   decode-2:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    container_name: kvbench-decode-2
+    <<: *kvbench-common
     environment:
-      - KVBENCH_INSTANCE_ID=decode-2
-      - KVBENCH_SERVER__SERVER_TYPE=decode
-      - KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
-      - KVBENCH_GPU__GPU_PROFILE=H100_SXM
-      - KVBENCH_STORAGE__BACKEND_TYPE=redis
-      - KVBENCH_STORAGE__REDIS_URL=redis://redis:6379
-    ports:
-      - "8102:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+      <<: *lmcache-env
+      KVBENCH_INSTANCE_ID: decode-2
+      KVBENCH_SERVER__SERVER_TYPE: decode
 
-  # Proxy / Load Balancer
   proxy:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-    container_name: kvbench-proxy
-    environment:
-      - KVBENCH_INSTANCE_ID=proxy
-      - KVBENCH_SERVER__SERVER_TYPE=proxy
-      - KVBENCH_DISTRIBUTED__PREFILL_ENDPOINTS=["http://prefill-1:8000","http://prefill-2:8000"]
-      - KVBENCH_DISTRIBUTED__DECODE_ENDPOINTS=["http://decode-1:8000","http://decode-2:8000"]
-      - KVBENCH_DISTRIBUTED__HEALTH_CHECK_INTERVAL=10.0
-    ports:
-      - "8000:8000"
+    image: kvbench:latest
     depends_on:
       - prefill-1
       - prefill-2
       - decode-1
       - decode-2
-    restart: unless-stopped
-
-volumes:
-  redis-data:
-    driver: local
-
-networks:
-  default:
-    name: kvbench-distributed
+    ports:
+      - "8000:8000"
+    environment:
+      KVBENCH_INSTANCE_ID: proxy
+      KVBENCH_SERVER__SERVER_TYPE: proxy
+      KVBENCH_DISTRIBUTED__PREFILL_ENDPOINTS: "http://prefill-1:8000,http://prefill-2:8000"
+      KVBENCH_DISTRIBUTED__DECODE_ENDPOINTS: "http://decode-1:8000,http://decode-2:8000"

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from kvbench.connectors.lmcache import LMCacheConnector
 from kvbench.core.config import KVBenchConfig
 from kvbench.servers.openai_compat import ChatCompletionRequest, ChatMessage, MessageRole
 from kvbench.servers.prefill import PrefillServer, PrefillStats
-from kvbench.storage.memory import MemoryStorageBackend
+from tests.fakes import FakeKVStack
 
 
 class TestPrefillStats:
@@ -44,28 +43,23 @@ class TestPrefillServer:
         return KVBenchConfig(instance_id="test-prefill")
 
     @pytest.fixture
-    def storage(self) -> MemoryStorageBackend:
-        """Create a test storage backend."""
-        return MemoryStorageBackend(max_size_bytes=10_000_000, name="test")
+    def kv(self) -> FakeKVStack:
+        """Create a fake KV stack."""
+        return FakeKVStack(chunk_size=16)
 
     @pytest.fixture
-    async def server(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> PrefillServer:
+    async def server(self, config: KVBenchConfig, kv: FakeKVStack) -> PrefillServer:
         """Create a test server instance."""
-        connector = LMCacheConnector(storage=storage, name="test")
-        server = PrefillServer(config=config, connector=connector)
+        server = PrefillServer(config=config, kv=kv)
         yield server
         await server.stop()
 
-    def test_init(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
+    def test_init(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
         """Test server initialization."""
-        connector = LMCacheConnector(storage=storage)
-        server = PrefillServer(config=config, connector=connector)
+        server = PrefillServer(config=config, kv=kv)
         assert server.instance_id == "test-prefill"
         assert server.model_name == "llama-3.1-8b"
+        assert server.chunk_size == kv.chunk_size
 
     def test_simulate_tokenize(self, server: PrefillServer) -> None:
         """Test token simulation."""
@@ -74,31 +68,15 @@ class TestPrefillServer:
         assert len(tokens) > 0
         assert len(tokens) <= len("Hello world, how are you?")
 
-    def test_chunk_tokens(self, server: PrefillServer) -> None:
-        """Test token chunking."""
-        tokens = list(range(1000))
-        chunks = server._chunk_tokens(tokens, chunk_size=256)
-        assert len(chunks) == 4  # 1000 / 256 = 3.9, rounded up to 4
-        assert len(chunks[0]) == 256
-        assert len(chunks[-1]) == 1000 % 256 + 256 * 0 or len(chunks[-1]) <= 256
-
-    def test_compute_chunk_hash(self, server: PrefillServer) -> None:
-        """Test chunk hash computation is consistent."""
-        hash1 = server._compute_chunk_hash([1, 2, 3])
-        hash2 = server._compute_chunk_hash([1, 2, 3])
-        hash3 = server._compute_chunk_hash([3, 2, 1])
-        assert hash1 == hash2
-        assert hash1 != hash3
-
     @pytest.mark.asyncio
-    async def test_process_prefill(self, server: PrefillServer) -> None:
-        """Test prefill processing."""
+    async def test_process_prefill(self, server: PrefillServer, kv: FakeKVStack) -> None:
+        """Prefill looks up, stores through the KV stack, and reports counts."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
             messages=[
                 ChatMessage(
                     role=MessageRole.USER,
-                    content="Hello, this is a test prompt.",
+                    content="Hello, this is a test prompt with enough words " * 8,
                 )
             ],
         )
@@ -106,18 +84,18 @@ class TestPrefillServer:
         num_tokens, hits, misses, latency = await server.process_prefill(request)
 
         assert num_tokens > 0
-        assert hits >= 0
-        assert misses >= 0
+        assert hits == 0  # cold cache
+        assert misses > 0
         assert latency >= 0
+        assert kv.stats.lookups == 1
+        assert kv.stats.stores == 1
 
     @pytest.mark.asyncio
     async def test_chat_completions(self, server: PrefillServer) -> None:
         """Test chat completion endpoint."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
-            messages=[
-                ChatMessage(role=MessageRole.USER, content="Hello!")
-            ],
+            messages=[ChatMessage(role=MessageRole.USER, content="Hello!")],
         )
 
         response = await server.chat_completions(request)
@@ -128,26 +106,26 @@ class TestPrefillServer:
 
     @pytest.mark.asyncio
     async def test_cache_hit_on_repeated_request(
-        self, server: PrefillServer
+        self, server: PrefillServer, kv: FakeKVStack
     ) -> None:
-        """Test that repeated requests get cache hits."""
+        """Repeated requests hit the cache and read KV through the stack."""
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
             messages=[
-                ChatMessage(role=MessageRole.USER, content="Same prompt")
+                ChatMessage(role=MessageRole.USER, content="Same prompt repeated " * 20)
             ],
         )
 
-        # First request - all misses
         await server.chat_completions(request)
-        first_misses = server.stats.cache_misses
+        first_hits = server.stats.cache_hits
+        assert first_hits == 0
+        assert kv.stats.retrieves == 0
 
-        # Second request - should get hits
         await server.chat_completions(request)
-        second_misses = server.stats.cache_misses
-
-        # Second request should have fewer misses
-        assert second_misses == first_misses  # Same misses, but hits increased
+        assert server.stats.cache_hits > first_hits
+        # The cached prefix was read through the stack (the read path)
+        assert kv.stats.retrieves == 1
+        assert kv.stats.retrieved_tokens > 0
 
     @pytest.mark.asyncio
     async def test_list_models(self, server: PrefillServer) -> None:
@@ -167,7 +145,6 @@ class TestPrefillServer:
     @pytest.mark.asyncio
     async def test_get_metrics(self, server: PrefillServer) -> None:
         """Test getting metrics."""
-        # Make a request first
         request = ChatCompletionRequest(
             model="llama-3.1-8b",
             messages=[ChatMessage(role=MessageRole.USER, content="Test")],
@@ -179,19 +156,16 @@ class TestPrefillServer:
         assert metrics.requests_success == 1
 
     @pytest.mark.asyncio
-    async def test_start_stop(
-        self, config: KVBenchConfig, storage: MemoryStorageBackend
-    ) -> None:
-        """Test server start and stop."""
-        connector = LMCacheConnector(storage=storage)
-        server = PrefillServer(config=config, connector=connector)
+    async def test_start_stop(self, config: KVBenchConfig, kv: FakeKVStack) -> None:
+        """Server start/stop does not close the app-owned KV stack."""
+        server = PrefillServer(config=config, kv=kv)
 
         await server.start()
         assert server._running is True
 
         await server.stop()
         assert server._running is False
-        assert connector.is_closed is True
+        assert kv.closed is False
 
     def test_repr(self, server: PrefillServer) -> None:
         """Test string representation."""

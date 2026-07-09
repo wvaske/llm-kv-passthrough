@@ -17,13 +17,13 @@ The GPU emulation layer calculates operation timing based on:
 
 | Profile | BF16 TFLOPS | HBM BW (TB/s) | HBM (GB) | TDP (W) |
 |---------|-------------|---------------|----------|---------|
-| `H100_SXM` | 1979 | 3.35 | 80 | 700 |
-| `H100_PCIe` | 1513 | 2.0 | 80 | 350 |
-| `H200_SXM` | 1979 | 4.8 | 141 | 700 |
+| `H100_SXM` | 989.5 | 3.35 | 80 | 700 |
+| `H100_PCIe` | 756.5 | 2.0 | 80 | 350 |
+| `H200_SXM` | 989.5 | 4.8 | 141 | 700 |
 | `A100_SXM` | 312 | 2.0 | 80 | 400 |
 | `A100_PCIe` | 312 | 2.0 | 80 | 300 |
-| `L4` | 121 | 0.3 | 24 | 72 |
-| `L40S` | 362 | 0.864 | 48 | 350 |
+| `L4` | 60.5 | 0.3 | 24 | 72 |
+| `L40S` | 181.05 | 0.864 | 48 | 350 |
 
 ### Profile Selection
 
@@ -100,20 +100,39 @@ kvbench serve --gpu H100_SXM -e KVBENCH_GPU__EFFICIENCY_FACTOR=0.85
 kvbench serve --gpu H100_SXM -e KVBENCH_GPU__EFFICIENCY_FACTOR=0.65
 ```
 
-## Tensor Parallelism
+## Tensor and Pipeline Parallelism
 
-For multi-GPU configurations, specify tensor parallelism:
+For multi-GPU configurations, specify tensor and/or pipeline parallelism:
 
 ```bash
-# 4-way tensor parallelism
-export KVBENCH_GPU__TP_SIZE=4
-kvbench serve --gpu H100_SXM
+# 4-way tensor parallelism, 2 pipeline stages
+kvbench serve --gpu H100_SXM --tp-size 4 --pp-size 2
 ```
 
 Timing is adjusted:
 - Compute scales linearly with TP size
 - Memory bandwidth scales linearly with TP size
-- Communication overhead is added
+- Communication overhead is added on top of the roofline result:
+  - **AllReduce (TP)**: ring-AllReduce of the hidden states after attention
+    and after the FFN in every layer (2 per layer), sized by the tokens in
+    flight — the full new-token count during prefill, one token per decode step
+  - **Send/Recv (PP)**: point-to-point activation transfer at each of the
+    `pp_size - 1` stage boundaries
+
+Interconnect bandwidth defaults to the GPU profile's NVLink bandwidth and can
+be overridden with `timing.nvlink_bandwidth_gb_s`. Either overhead can be
+disabled via `timing.include_tp_communication` /
+`timing.include_pp_communication`.
+
+## Timing Modes
+
+The servers derive latency from a configurable timing strategy:
+
+- **Roofline** (default): the model described above, using the GPU and model
+  profiles, with TP/PP communication overhead.
+- **Simple**: fixed `prefill_ms_per_token` / `decode_ms_per_token`, no GPU
+  modeling. Useful for testing and for isolating KV-stack behavior from
+  compute emulation: `kvbench serve --simple-timing --decode-ms-per-token 0.5`.
 
 ## Custom GPU Profiles
 

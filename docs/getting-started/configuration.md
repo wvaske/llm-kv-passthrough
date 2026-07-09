@@ -18,13 +18,14 @@ export KVBENCH_GPU__GPU_PROFILE=H100_SXM
 export KVBENCH_GPU__EFFICIENCY_FACTOR=0.7
 export KVBENCH_GPU__TP_SIZE=1
 
-# Storage
-export KVBENCH_STORAGE__BACKEND_TYPE=memory
-export KVBENCH_STORAGE__REDIS_URL=redis://localhost:6379
+# KV management stack (storage is configured through LMCache itself)
+export KVBENCH_KV__STACK=lmcache
+export KVBENCH_KV__LMCACHE_CONFIG_FILE=/etc/kvbench/lmcache.yaml
 
-# Resources
-export KVBENCH_RESOURCES__CPU_MEMORY_GB=8.0
-export KVBENCH_RESOURCES__NVME_STORAGE_GB=100.0
+# Or configure LMCache via its own environment variables instead of a file
+export LMCACHE_CHUNK_SIZE=256
+export LMCACHE_LOCAL_DISK="file:///var/lib/lmcache/"
+export LMCACHE_MAX_LOCAL_DISK_SIZE=100
 ```
 
 ## YAML Configuration
@@ -47,20 +48,19 @@ gpu:
   efficiency_factor: 0.7
   tp_size: 1
 
-storage:
-  backend_type: redis
-  redis_url: redis://localhost:6379
-  redis_cluster: false
+timing:
+  simple_mode: false            # true = fixed ms/token instead of roofline
+  prefill_ms_per_token: 0.1     # simple mode only
+  decode_ms_per_token: 1.0      # simple mode only
+  include_tp_communication: true   # AllReduce timing when tp_size > 1
+  include_pp_communication: true   # send/recv timing when pp_size > 1
+  pp_size: 1
+  # nvlink_bandwidth_gb_s: 900.0   # defaults to the GPU profile's NVLink
 
-connector:
-  connector_type: lmcache
-  lmcache_chunk_size: 256
-
-resources:
-  cpu_memory_gb: 16.0
-  nvme_storage_gb: 500.0
-  nvme_path: /var/lib/kvbench/nvme
-  memory_allocation: lazy
+kv:
+  stack: lmcache
+  # LMCache's own config file controls all storage (tiers, backends, sizes)
+  lmcache_config_file: /etc/kvbench/lmcache.yaml
 
 distributed:
   prefill_endpoints:
@@ -104,28 +104,42 @@ kvbench serve --config config.yaml
 | `efficiency_factor` | `0.7` | GPU efficiency (0.1-1.0) |
 | `tp_size` | `1` | Tensor parallelism size |
 
-### Storage Options
+### Timing Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `backend_type` | `memory` | Storage backend |
-| `redis_url` | `None` | Redis connection URL |
-| `redis_cluster` | `false` | Use Redis cluster mode |
-| `filesystem_path` | `None` | Path for NFS/Weka backends |
-| `s3_endpoint` | `None` | S3/MinIO endpoint URL |
-| `s3_bucket` | `None` | S3 bucket name |
+| `simple_mode` | `false` | Fixed ms/token timing instead of the roofline model |
+| `prefill_ms_per_token` | `0.1` | Prefill latency per token in ms (simple mode) |
+| `decode_ms_per_token` | `1.0` | Decode latency per token in ms (simple mode) |
+| `include_tp_communication` | `true` | Add AllReduce timing when `tp_size > 1` (roofline mode) |
+| `include_pp_communication` | `true` | Add pipeline send/recv timing when `pp_size > 1` (roofline mode) |
+| `pp_size` | `1` | Pipeline parallelism size |
+| `nvlink_bandwidth_gb_s` | GPU profile | Interconnect bandwidth for communication timing |
+
+CLI shortcuts: `--simple-timing/--roofline-timing`, `--prefill-ms-per-token`,
+`--decode-ms-per-token`, `--tp-size`, and `--pp-size`.
+
+### KV Stack Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `stack` | `lmcache` | KV management stack (`kvbm` planned) |
+| `lmcache_config_file` | `None` | LMCache's own config file; `LMCACHE_*` env vars are used when unset |
+
+Storage backends, tier sizes, and eviction are configured in LMCache's own
+application configuration — see [Storage](../architecture/storage.md).
 
 ### Available GPU Profiles
 
 | Profile | BF16 TFLOPS | HBM BW (TB/s) | HBM (GB) |
 |---------|-------------|---------------|----------|
-| `H100_SXM` | 1979 | 3.35 | 80 |
-| `H100_PCIe` | 1513 | 2.0 | 80 |
-| `H200_SXM` | 1979 | 4.8 | 141 |
+| `H100_SXM` | 989.5 | 3.35 | 80 |
+| `H100_PCIe` | 756.5 | 2.0 | 80 |
+| `H200_SXM` | 989.5 | 4.8 | 141 |
 | `A100_SXM` | 312 | 2.0 | 80 |
 | `A100_PCIe` | 312 | 2.0 | 80 |
-| `L4` | 121 | 0.3 | 24 |
-| `L40S` | 362 | 0.864 | 48 |
+| `L4` | 60.5 | 0.3 | 24 |
+| `L40S` | 181.05 | 0.864 | 48 |
 
 ### Available Model Profiles
 

@@ -10,226 +10,40 @@ from unittest import mock
 import pytest
 
 from kvbench.core.config import (
-    ConnectorConfig,
     DistributedConfig,
     GPUEmulationConfig,
     KVBenchConfig,
+    KVStackConfig,
     MetricsConfig,
-    ResourceLimits,
     ServerConfig,
-    StorageConfig,
 )
 
 
-class TestResourceLimits:
-    """Tests for ResourceLimits configuration."""
+class TestKVStackConfig:
+    """Tests for KVStackConfig."""
 
     def test_default_values(self) -> None:
-        """Test default values are set correctly."""
-        config = ResourceLimits()
-        assert config.cpu_memory_gb == 8.0
-        assert config.nvme_storage_gb == 100.0
-        assert config.nvme_path == Path("/var/lib/kvbench/nvme")
-        assert config.memory_allocation == "lazy"
+        """Default stack is LMCache configured from its own env/defaults."""
+        config = KVStackConfig()
+        assert config.stack == "lmcache"
+        assert config.lmcache_config_file is None
 
-    def test_custom_values(self) -> None:
-        """Test custom values are accepted."""
-        config = ResourceLimits(
-            cpu_memory_gb=16.0,
-            nvme_storage_gb=500.0,
-            nvme_path=Path("/custom/path"),
-            memory_allocation="greedy",
-        )
-        assert config.cpu_memory_gb == 16.0
-        assert config.nvme_storage_gb == 500.0
-        assert config.nvme_path == Path("/custom/path")
-        assert config.memory_allocation == "greedy"
+    def test_config_file_string_conversion(self, tmp_path: Path) -> None:
+        """String paths convert to Path objects."""
+        f = tmp_path / "lmcache.yaml"
+        f.write_text("chunk_size: 256\n")
+        config = KVStackConfig(lmcache_config_file=str(f))
+        assert isinstance(config.lmcache_config_file, Path)
 
-    def test_path_string_conversion(self) -> None:
-        """Test string paths are converted to Path objects."""
-        config = ResourceLimits(nvme_path="/string/path")  # type: ignore[arg-type]
-        assert config.nvme_path == Path("/string/path")
-        assert isinstance(config.nvme_path, Path)
+    def test_missing_config_file_fails_loudly(self) -> None:
+        """A nonexistent LMCache config file must fail at config time."""
+        with pytest.raises(ValueError, match="not found"):
+            KVStackConfig(lmcache_config_file="/nonexistent/lmcache.yaml")
 
-    def test_cpu_memory_bytes_property(self) -> None:
-        """Test cpu_memory_bytes property calculation."""
-        config = ResourceLimits(cpu_memory_gb=8.0)
-        assert config.cpu_memory_bytes == 8 * 1024**3
-
-    def test_nvme_storage_bytes_property(self) -> None:
-        """Test nvme_storage_bytes property calculation."""
-        config = ResourceLimits(nvme_storage_gb=100.0)
-        assert config.nvme_storage_bytes == 100 * 1024**3
-
-    def test_cpu_memory_gb_validation_min(self) -> None:
-        """Test cpu_memory_gb minimum validation."""
+    def test_unknown_stack_rejected(self) -> None:
+        """Only implemented stacks are accepted."""
         with pytest.raises(ValueError):
-            ResourceLimits(cpu_memory_gb=0.05)
-
-    def test_cpu_memory_gb_validation_max(self) -> None:
-        """Test cpu_memory_gb maximum validation."""
-        with pytest.raises(ValueError):
-            ResourceLimits(cpu_memory_gb=2000.0)
-
-    def test_nvme_storage_gb_validation_min(self) -> None:
-        """Test nvme_storage_gb minimum validation (0 is allowed)."""
-        config = ResourceLimits(nvme_storage_gb=0.0)
-        assert config.nvme_storage_gb == 0.0
-
-    def test_nvme_storage_gb_validation_max(self) -> None:
-        """Test nvme_storage_gb maximum validation."""
-        with pytest.raises(ValueError):
-            ResourceLimits(nvme_storage_gb=20000.0)
-
-    def test_memory_allocation_literal(self) -> None:
-        """Test memory_allocation accepts valid literals."""
-        for allocation in ["greedy", "lazy", "pool"]:
-            config = ResourceLimits(memory_allocation=allocation)  # type: ignore[arg-type]
-            assert config.memory_allocation == allocation
-
-    def test_memory_allocation_invalid(self) -> None:
-        """Test memory_allocation rejects invalid values."""
-        with pytest.raises(ValueError):
-            ResourceLimits(memory_allocation="invalid")  # type: ignore[arg-type]
-
-
-class TestStorageConfig:
-    """Tests for StorageConfig configuration."""
-
-    def test_default_values(self) -> None:
-        """Test default values are set correctly."""
-        config = StorageConfig()
-        assert config.backend_type == "memory"
-        assert config.redis_url is None
-        assert config.redis_cluster is False
-        assert config.filesystem_path is None
-
-    def test_redis_backend_valid(self) -> None:
-        """Test valid Redis configuration."""
-        config = StorageConfig(
-            backend_type="redis",
-            redis_url="redis://localhost:6379",
-        )
-        assert config.backend_type == "redis"
-        assert config.redis_url == "redis://localhost:6379"
-
-    def test_redis_backend_missing_url(self) -> None:
-        """Test Redis backend requires redis_url."""
-        with pytest.raises(ValueError, match="redis_url is required"):
-            StorageConfig(backend_type="redis")
-
-    def test_nfs_backend_valid(self) -> None:
-        """Test valid NFS configuration."""
-        config = StorageConfig(
-            backend_type="nfs",
-            filesystem_path=Path("/mnt/nfs"),
-        )
-        assert config.backend_type == "nfs"
-        assert config.filesystem_path == Path("/mnt/nfs")
-
-    def test_nfs_backend_missing_path(self) -> None:
-        """Test NFS backend requires filesystem_path."""
-        with pytest.raises(ValueError, match="filesystem_path is required"):
-            StorageConfig(backend_type="nfs")
-
-    def test_weka_backend_valid(self) -> None:
-        """Test valid Weka configuration."""
-        config = StorageConfig(
-            backend_type="weka",
-            filesystem_path=Path("/mnt/weka"),
-        )
-        assert config.backend_type == "weka"
-
-    def test_weka_backend_missing_path(self) -> None:
-        """Test Weka backend requires filesystem_path."""
-        with pytest.raises(ValueError, match="filesystem_path is required"):
-            StorageConfig(backend_type="weka")
-
-    def test_minio_backend_valid(self) -> None:
-        """Test valid MinIO configuration."""
-        config = StorageConfig(
-            backend_type="minio",
-            s3_endpoint="http://localhost:9000",
-            s3_bucket="kvbench",
-        )
-        assert config.backend_type == "minio"
-        assert config.s3_endpoint == "http://localhost:9000"
-        assert config.s3_bucket == "kvbench"
-
-    def test_minio_backend_missing_endpoint(self) -> None:
-        """Test MinIO backend requires s3_endpoint."""
-        with pytest.raises(ValueError, match="s3_endpoint is required"):
-            StorageConfig(backend_type="minio", s3_bucket="kvbench")
-
-    def test_minio_backend_missing_bucket(self) -> None:
-        """Test MinIO backend requires s3_bucket."""
-        with pytest.raises(ValueError, match="s3_bucket is required"):
-            StorageConfig(backend_type="minio", s3_endpoint="http://localhost:9000")
-
-    def test_ceph_backend_valid(self) -> None:
-        """Test valid Ceph configuration."""
-        config = StorageConfig(
-            backend_type="ceph",
-            ceph_pool="kvbench",
-        )
-        assert config.backend_type == "ceph"
-        assert config.ceph_pool == "kvbench"
-
-    def test_ceph_backend_missing_pool(self) -> None:
-        """Test Ceph backend requires ceph_pool."""
-        with pytest.raises(ValueError, match="ceph_pool is required"):
-            StorageConfig(backend_type="ceph")
-
-    def test_path_string_conversion(self) -> None:
-        """Test string paths are converted to Path objects."""
-        config = StorageConfig(
-            backend_type="nfs",
-            filesystem_path="/string/path",  # type: ignore[arg-type]
-            ceph_conf="/etc/ceph.conf",  # type: ignore[arg-type]
-        )
-        assert config.filesystem_path == Path("/string/path")
-        assert config.ceph_conf == Path("/etc/ceph.conf")
-
-    def test_local_disk_backend(self) -> None:
-        """Test local_disk backend (no special requirements)."""
-        config = StorageConfig(backend_type="local_disk")
-        assert config.backend_type == "local_disk"
-
-
-class TestConnectorConfig:
-    """Tests for ConnectorConfig configuration."""
-
-    def test_default_values(self) -> None:
-        """Test default values are set correctly."""
-        config = ConnectorConfig()
-        assert config.connector_type == "lmcache"
-        assert config.lmcache_chunk_size == 256
-        assert config.lmcache_remote_url is None
-
-    def test_lmcache_config(self) -> None:
-        """Test LMCache configuration."""
-        config = ConnectorConfig(
-            connector_type="lmcache",
-            lmcache_chunk_size=512,
-            lmcache_remote_url="lm://localhost:8080",
-        )
-        assert config.lmcache_chunk_size == 512
-        assert config.lmcache_remote_url == "lm://localhost:8080"
-
-    def test_chunk_size_validation_min(self) -> None:
-        """Test chunk_size minimum validation."""
-        with pytest.raises(ValueError):
-            ConnectorConfig(lmcache_chunk_size=8)
-
-    def test_chunk_size_validation_max(self) -> None:
-        """Test chunk_size maximum validation."""
-        with pytest.raises(ValueError):
-            ConnectorConfig(lmcache_chunk_size=8192)
-
-    def test_mock_connector(self) -> None:
-        """Test mock connector type."""
-        config = ConnectorConfig(connector_type="mock")
-        assert config.connector_type == "mock"
+            KVStackConfig(stack="mooncake")
 
 
 class TestGPUEmulationConfig:
@@ -362,9 +176,7 @@ class TestKVBenchConfig:
         """Test default values are set correctly."""
         config = KVBenchConfig()
         assert config.instance_id == "kvbench-0"
-        assert isinstance(config.resources, ResourceLimits)
-        assert isinstance(config.storage, StorageConfig)
-        assert isinstance(config.connector, ConnectorConfig)
+        assert isinstance(config.kv, KVStackConfig)
         assert isinstance(config.gpu, GPUEmulationConfig)
         assert isinstance(config.server, ServerConfig)
         assert isinstance(config.distributed, DistributedConfig)
@@ -374,30 +186,25 @@ class TestKVBenchConfig:
         """Test nested configuration works correctly."""
         config = KVBenchConfig(
             instance_id="test-instance",
-            resources=ResourceLimits(cpu_memory_gb=32.0),
-            storage=StorageConfig(
-                backend_type="redis",
-                redis_url="redis://localhost:6379",
-            ),
+            kv=KVStackConfig(stack="lmcache"),
+            gpu=GPUEmulationConfig(gpu_profile="A100_SXM"),
         )
         assert config.instance_id == "test-instance"
-        assert config.resources.cpu_memory_gb == 32.0
-        assert config.storage.backend_type == "redis"
+        assert config.kv.stack == "lmcache"
+        assert config.gpu.gpu_profile == "A100_SXM"
 
     def test_from_env(self) -> None:
         """Test configuration loading from environment variables."""
         env_vars = {
             "KVBENCH_INSTANCE_ID": "env-instance",
-            "KVBENCH_RESOURCES__CPU_MEMORY_GB": "64.0",
-            "KVBENCH_STORAGE__BACKEND_TYPE": "memory",
+            "KVBENCH_KV__STACK": "lmcache",
             "KVBENCH_GPU__GPU_PROFILE": "A100_SXM",
             "KVBENCH_SERVER__PORT": "9000",
         }
         with mock.patch.dict(os.environ, env_vars, clear=False):
             config = KVBenchConfig.from_env()
             assert config.instance_id == "env-instance"
-            assert config.resources.cpu_memory_gb == 64.0
-            assert config.storage.backend_type == "memory"
+            assert config.kv.stack == "lmcache"
             assert config.gpu.gpu_profile == "A100_SXM"
             assert config.server.port == 9000
 
@@ -405,10 +212,8 @@ class TestKVBenchConfig:
         """Test configuration loading from YAML file."""
         yaml_content = """
 instance_id: yaml-instance
-resources:
-  cpu_memory_gb: 128.0
-storage:
-  backend_type: memory
+kv:
+  stack: lmcache
 server:
   port: 8080
 """
@@ -418,7 +223,7 @@ server:
             try:
                 config = KVBenchConfig.from_yaml(f.name)
                 assert config.instance_id == "yaml-instance"
-                assert config.resources.cpu_memory_gb == 128.0
+                assert config.kv.stack == "lmcache"
                 assert config.server.port == 8080
             finally:
                 os.unlink(f.name)
@@ -464,5 +269,5 @@ server:
         config = KVBenchConfig(instance_id="dump-test")
         data = config.model_dump()
         assert data["instance_id"] == "dump-test"
-        assert "resources" in data
-        assert "storage" in data
+        assert "kv" in data
+        assert "server" in data

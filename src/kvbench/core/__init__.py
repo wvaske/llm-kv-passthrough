@@ -10,14 +10,13 @@ This module provides the foundational components for KV-Bench:
 """
 
 from kvbench.core.config import (
-    ConnectorConfig,
     DistributedConfig,
     GPUEmulationConfig,
     KVBenchConfig,
+    KVStackConfig,
     MetricsConfig,
-    ResourceLimits,
     ServerConfig,
-    StorageConfig,
+    TimingConfig,
 )
 from kvbench.core.gpu_profiles import (
     GPU_PROFILES,
@@ -47,13 +46,12 @@ from kvbench.core.tokens import (
 __all__ = [
     # Config
     "KVBenchConfig",
-    "ResourceLimits",
-    "StorageConfig",
-    "ConnectorConfig",
+    "KVStackConfig",
     "GPUEmulationConfig",
     "ServerConfig",
     "DistributedConfig",
     "MetricsConfig",
+    "TimingConfig",
     # GPU Profiles
     "GPUProfile",
     "GPU_PROFILES",

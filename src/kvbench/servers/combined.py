@@ -11,7 +11,6 @@ The server provides a complete OpenAI-compatible API with streaming support.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 import uuid
@@ -19,6 +18,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from kvbench.core.tokens import TokenProcessor
 from kvbench.servers.openai_compat import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -29,10 +29,11 @@ from kvbench.servers.openai_compat import (
     ModelInfo,
     ModelList,
 )
+from kvbench.timing import create_timing_strategy
 
 if TYPE_CHECKING:
-    from kvbench.connectors.base import KVConnector
     from kvbench.core.config import KVBenchConfig
+    from kvbench.kv.base import KVStack
 
 logger = logging.getLogger(__name__)
 
@@ -84,25 +85,29 @@ class CombinedServer:
 
     Attributes:
         config: KV-Bench configuration.
-        connector: KV cache connector.
+        kv: KV management stack for cache operations.
         stats: Server statistics.
     """
 
     def __init__(
         self,
         config: KVBenchConfig,
-        connector: KVConnector,
+        kv: KVStack,
     ) -> None:
         """Initialize the combined server.
 
         Args:
             config: KV-Bench configuration.
-            connector: KV cache connector for cache operations.
+            kv: Started KV management stack for cache operations.
         """
         self.config = config
-        self.connector = connector
+        self.kv = kv
         self.stats = CombinedStats()
         self._running = False
+
+        self.chunk_size = kv.chunk_size
+        self.processor = TokenProcessor(chunk_size=self.chunk_size)
+        self.timing = create_timing_strategy(config)
 
     @property
     def model_name(self) -> str:
@@ -115,51 +120,72 @@ class CombinedServer:
         return self.config.instance_id
 
     def _simulate_tokenize(self, text: str) -> list[int]:
-        """Simulate tokenization of text."""
-        num_tokens = max(1, len(text) // 4)
-        return list(range(num_tokens))
+        """Simulate tokenization of text (content-based, prefix-stable)."""
+        return self.processor.simulate_tokenize(text)
 
-    def _chunk_tokens(self, tokens: list[int], chunk_size: int) -> list[list[int]]:
-        """Split tokens into chunks."""
-        chunks = []
-        for i in range(0, len(tokens), chunk_size):
-            chunks.append(tokens[i : i + chunk_size])
-        return chunks
-
-    def _compute_chunk_hash(self, tokens: list[int]) -> str:
-        """Compute hash for a token chunk."""
-        data = ",".join(str(t) for t in tokens).encode()
-        return hashlib.sha256(data).hexdigest()
-
-    def _calculate_prefill_latency_ms(self, num_tokens: int) -> float:
-        """Calculate prefill latency."""
-        efficiency = self.config.gpu.efficiency_factor
-        tp_size = self.config.gpu.tp_size
-        base_latency_per_token = 0.1 / efficiency
-        scaled_latency = base_latency_per_token / tp_size
-        return scaled_latency * num_tokens
+    def _calculate_prefill_latency_ms(self, num_tokens: int, context_tokens: int = 0) -> float:
+        """Calculate prefill latency using the configured timing strategy."""
+        return self.timing.prefill_latency(num_tokens, context_tokens=context_tokens).total_ms
 
     def _calculate_decode_latency_ms(self, context_length: int) -> float:
-        """Calculate decode latency per token."""
-        efficiency = self.config.gpu.efficiency_factor
-        tp_size = self.config.gpu.tp_size
-        base_latency = 8.0 / efficiency
-        scaled_latency = base_latency / tp_size
-        context_penalty = (context_length / 1000) * 0.01
-        return scaled_latency + context_penalty
+        """Calculate decode latency per token using the configured timing strategy."""
+        return self.timing.decode_latency(context_length).total_ms
 
     def _generate_mock_token(self, position: int) -> str:
         """Generate a mock token."""
         mock_tokens = [
-            " The", " answer", " to", " your", " question", " is",
-            " that", " we", " need", " to", " consider", " multiple",
-            " factors", " when", " making", " this", " decision", ".",
-            " First", ",", " let", " me", " explain", " the",
-            " key", " points", " that", " are", " relevant", " here",
-            ".", " Based", " on", " the", " information", " provided",
-            ",", " I", " would", " recommend", " the", " following",
-            " approach", ":", " carefully", " analyze", " the",
-            " situation", " and", " then", " proceed", ".",
+            " The",
+            " answer",
+            " to",
+            " your",
+            " question",
+            " is",
+            " that",
+            " we",
+            " need",
+            " to",
+            " consider",
+            " multiple",
+            " factors",
+            " when",
+            " making",
+            " this",
+            " decision",
+            ".",
+            " First",
+            ",",
+            " let",
+            " me",
+            " explain",
+            " the",
+            " key",
+            " points",
+            " that",
+            " are",
+            " relevant",
+            " here",
+            ".",
+            " Based",
+            " on",
+            " the",
+            " information",
+            " provided",
+            ",",
+            " I",
+            " would",
+            " recommend",
+            " the",
+            " following",
+            " approach",
+            ":",
+            " carefully",
+            " analyze",
+            " the",
+            " situation",
+            " and",
+            " then",
+            " proceed",
+            ".",
         ]
         return mock_tokens[position % len(mock_tokens)]
 
@@ -169,28 +195,29 @@ class CombinedServer:
         Returns:
             Tuple of (num_tokens, cache_hits, cache_misses).
         """
-        tokens = self._simulate_tokenize(prompt)
+        tokens = self.processor.simulate_tokenize(prompt)
         num_tokens = len(tokens)
 
-        chunk_size = 256
-        if hasattr(self.connector, "config"):
-            chunk_size = getattr(self.connector.config, "chunk_size", 256)
+        # Ask the KV stack how much of the sequence is already cached
+        hit_tokens = await self.kv.lookup(tokens)
+        if hit_tokens:
+            # Read the cached prefix through the stack (the storage read path)
+            await self.kv.retrieve(tokens[:hit_tokens])
 
-        chunks = self._chunk_tokens(tokens, chunk_size)
+        miss_tokens = num_tokens - hit_tokens
+        if miss_tokens:
+            # Simulate prefill compute for the uncached suffix, which
+            # attends to the cached prefix
+            prefill_latency = self._calculate_prefill_latency_ms(
+                miss_tokens, context_tokens=hit_tokens
+            )
+            await asyncio.sleep(prefill_latency / 1000)
 
-        cache_hits = 0
-        cache_misses = 0
+            # Store the new KV through the stack (skipping the cached prefix)
+            await self.kv.store(tokens, skip_leading=hit_tokens)
 
-        for chunk in chunks:
-            chunk_hash = self._compute_chunk_hash(chunk)
-
-            if await self.connector.exists(chunk_hash):
-                cache_hits += 1
-            else:
-                cache_misses += 1
-                chunk_latency = self._calculate_prefill_latency_ms(len(chunk))
-                await asyncio.sleep(chunk_latency / 1000)
-                await self.connector.store(chunk_hash, len(chunk))
+        cache_hits = hit_tokens // self.chunk_size
+        cache_misses = (miss_tokens + self.chunk_size - 1) // self.chunk_size
 
         return num_tokens, cache_hits, cache_misses
 
@@ -361,9 +388,8 @@ class CombinedServer:
         logger.info(f"Combined server {self.instance_id} started")
 
     async def stop(self) -> None:
-        """Stop the server."""
+        """Stop the server (the KV stack's lifecycle is owned by the app)."""
         self._running = False
-        await self.connector.close()
         logger.info(f"Combined server {self.instance_id} stopped")
 
     def __repr__(self) -> str:

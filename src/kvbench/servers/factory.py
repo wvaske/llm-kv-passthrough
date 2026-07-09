@@ -15,44 +15,44 @@ from kvbench.servers.prefill import PrefillServer
 from kvbench.servers.proxy import DisaggregatedProxy
 
 if TYPE_CHECKING:
-    from kvbench.connectors.base import KVConnector
     from kvbench.core.config import KVBenchConfig
+    from kvbench.kv.base import KVStack
 
 ServerType = PrefillServer | DecodeServer | CombinedServer | DisaggregatedProxy
 
 
 def create_server(
     config: KVBenchConfig,
-    connector: KVConnector | None = None,
+    kv: KVStack | None = None,
 ) -> ServerType:
     """Create a server based on configuration.
 
     Args:
         config: KV-Bench configuration specifying server type.
-        connector: KV cache connector (required for prefill/decode/combined).
+        kv: Started KV management stack (required for prefill/decode/combined).
 
     Returns:
         An initialized server instance.
 
     Raises:
-        ValueError: If the server type is unknown or connector is missing.
+        ValueError: If the server type is unknown or the KV stack is missing.
     """
     server_type = config.server.server_type
 
     if server_type == "prefill":
-        if connector is None:
-            raise ValueError("connector is required for prefill server")
-        return PrefillServer(config=config, connector=connector)
+        if kv is None:
+            raise ValueError("a KV stack is required for prefill server")
+        return PrefillServer(config=config, kv=kv)
 
     elif server_type == "decode":
-        if connector is None:
-            raise ValueError("connector is required for decode server")
-        return DecodeServer(config=config, connector=connector)
+        if kv is None:
+            raise ValueError("a KV stack is required for decode server")
+        return DecodeServer(config=config, kv=kv)
 
     elif server_type == "combined":
-        if connector is None:
-            raise ValueError("connector is required for combined server")
-        return CombinedServer(config=config, connector=connector)
+        if kv is None:
+            raise ValueError("a KV stack is required for combined server")
+        return CombinedServer(config=config, kv=kv)
 
     elif server_type == "proxy":
         return DisaggregatedProxy(config=config)

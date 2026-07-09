@@ -57,11 +57,16 @@ See `inventory/example.yml` for all available variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `kvbench_version` | `latest` | Version to install |
+| `kvbench_pip_spec` | git+https of this repo | pip requirement to install |
 | `kvbench_model` | `llama-3.1-8b` | Model profile |
 | `kvbench_gpu` | `H100_SXM` | GPU profile |
-| `kvbench_storage` | `redis` | Storage backend |
-| `redis_url` | `redis://localhost:6379` | Redis URL |
+| `lmcache_chunk_size` | `256` | LMCache tokens per KV chunk |
+| `lmcache_max_local_cpu_size_gb` | `4.0` | LMCache CPU tier size |
+| `lmcache_local_disk_path` | unset | LMCache disk tier path (NVMe under test) |
+| `lmcache_remote_url` | unset | LMCache shared remote tier (`redis://...`, `s3://...`) |
+
+Storage lives entirely in the LMCache variables (rendered into
+`/etc/kvbench/lmcache.yaml`); KV-Bench itself has no storage settings.
 
 ## Usage Examples
 

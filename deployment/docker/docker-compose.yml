@@ -1,36 +1,30 @@
-# KV-Bench Simple Docker Compose
-# Single-node deployment with combined server
-version: "3.8"
-
+# Single-node KV-Bench: combined server, LMCache with CPU + disk tiers.
+# The disk tier lives on the kvbench-lmcache volume — mount a host NVMe
+# path there to put a real device under test.
 services:
   kvbench:
     build:
       context: ../..
       dockerfile: Dockerfile
-    container_name: kvbench
+    image: kvbench:latest
     ports:
       - "8000:8000"
     environment:
-      - KVBENCH_INSTANCE_ID=kvbench-standalone
-      - KVBENCH_SERVER__SERVER_TYPE=combined
-      - KVBENCH_SERVER__MODEL_PROFILE=llama-3.1-8b
-      - KVBENCH_GPU__GPU_PROFILE=H100_SXM
-      - KVBENCH_STORAGE__BACKEND_TYPE=memory
-      - KVBENCH_RESOURCES__CPU_MEMORY_GB=8.0
+      KVBENCH_SERVER__SERVER_TYPE: combined
+      KVBENCH_SERVER__MODEL_PROFILE: llama-3.1-8b
+      KVBENCH_GPU__GPU_PROFILE: H100_SXM
+      # Storage is LMCache's to manage:
+      LMCACHE_CHUNK_SIZE: "256"
+      LMCACHE_MAX_LOCAL_CPU_SIZE: "4"
+      LMCACHE_LOCAL_DISK: "file:///var/lib/lmcache/"
+      LMCACHE_MAX_LOCAL_DISK_SIZE: "20"
     volumes:
-      - kvbench-data:/var/lib/kvbench
-    restart: unless-stopped
+      - kvbench-lmcache:/var/lib/lmcache
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
 
 volumes:
-  kvbench-data:
-    driver: local
-
-networks:
-  default:
-    name: kvbench-network
+  kvbench-lmcache:

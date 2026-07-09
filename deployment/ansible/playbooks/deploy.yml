@@ -58,21 +58,31 @@
         creates: "{{ kvbench_home }}/venv/bin/python"
       become_user: "{{ kvbench_user }}"
 
-    - name: Install kvbench package
+    # kvbench is not published on PyPI; install from git (or override
+    # kvbench_pip_spec with a local wheel path or another VCS ref).
+    - name: Install kvbench package with the LMCache stack
       pip:
-        name: kvbench
-        state: "{{ 'latest' if kvbench_version == 'latest' else 'present' }}"
-        version: "{{ omit if kvbench_version == 'latest' else kvbench_version }}"
+        name: "{{ kvbench_pip_spec | default('kvbench[lmcache] @ git+https://github.com/wvaske/llm-kv-passthrough.git') }}"
         virtualenv: "{{ kvbench_home }}/venv"
       become_user: "{{ kvbench_user }}"
 
-    - name: Deploy configuration file
+    - name: Deploy KV-Bench configuration file
       template:
         src: ../templates/config.yaml.j2
         dest: "{{ kvbench_config_dir }}/config.yaml"
         owner: "{{ kvbench_user }}"
         group: "{{ kvbench_group }}"
         mode: '0640'
+      notify: Restart kvbench
+
+    - name: Deploy LMCache configuration file (owns all storage settings)
+      template:
+        src: ../templates/lmcache.yaml.j2
+        dest: "{{ kvbench_config_dir }}/lmcache.yaml"
+        owner: "{{ kvbench_user }}"
+        group: "{{ kvbench_group }}"
+        mode: '0640'
+      when: (kvbench_server_type | default('combined')) != 'proxy'
       notify: Restart kvbench
 
     - name: Deploy systemd service
