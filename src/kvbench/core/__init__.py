@@ -16,6 +16,7 @@ from kvbench.core.config import (
     KVStackConfig,
     MetricsConfig,
     ServerConfig,
+    TimingConfig,
 )
 from kvbench.core.gpu_profiles import (
     GPU_PROFILES,
@@ -50,6 +51,7 @@ __all__ = [
     "ServerConfig",
     "DistributedConfig",
     "MetricsConfig",
+    "TimingConfig",
     # GPU Profiles
     "GPUProfile",
     "GPU_PROFILES",

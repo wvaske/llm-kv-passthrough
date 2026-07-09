@@ -97,6 +97,65 @@ class GPUEmulationConfig(BaseModel):
     )
 
 
+class TimingConfig(BaseModel):
+    """Timing emulation configuration.
+
+    Controls how GPU compute timing is simulated. Two modes available:
+    - Simple mode: Fixed ms per token (no GPU modeling)
+    - Roofline mode: Uses GPU/model profiles for realistic timing,
+      including tensor parallel (AllReduce) and pipeline parallel
+      (send/recv) communication overhead.
+
+    Attributes:
+        simple_mode: Use simple ms/token timing instead of roofline.
+        prefill_ms_per_token: Prefill latency per token (simple mode).
+        decode_ms_per_token: Decode latency per token (simple mode).
+        include_tp_communication: Include AllReduce timing in roofline mode.
+        include_pp_communication: Include pipeline send/recv in roofline mode.
+        pp_size: Pipeline parallelism size.
+        nvlink_bandwidth_gb_s: Interconnect bandwidth for communication
+            timing. Defaults to the GPU profile's NVLink bandwidth when unset.
+    """
+
+    simple_mode: bool = Field(
+        default=False,
+        description="Use simple ms/token timing instead of roofline model",
+    )
+    prefill_ms_per_token: float = Field(
+        default=0.1,
+        ge=0.001,
+        le=100.0,
+        description="Prefill latency per token in ms (simple mode)",
+    )
+    decode_ms_per_token: float = Field(
+        default=1.0,
+        ge=0.001,
+        le=100.0,
+        description="Decode latency per token in ms (simple mode)",
+    )
+    include_tp_communication: bool = Field(
+        default=True,
+        description="Include AllReduce timing in roofline mode",
+    )
+    include_pp_communication: bool = Field(
+        default=True,
+        description="Include pipeline send/recv in roofline mode",
+    )
+    pp_size: int = Field(
+        default=1,
+        ge=1,
+        le=16,
+        description="Pipeline parallelism size",
+    )
+    nvlink_bandwidth_gb_s: float | None = Field(
+        default=None,
+        ge=1.0,
+        le=2000.0,
+        description="Interconnect bandwidth in GB/s for communication timing "
+        "(GPU profile's NVLink bandwidth when unset)",
+    )
+
+
 class ServerConfig(BaseModel):
     """Server configuration for the KV-Bench HTTP server.
 
@@ -235,6 +294,7 @@ class KVBenchConfig(BaseModel):
         instance_id: Unique identifier for this KV-Bench instance.
         kv: KV management stack configuration.
         gpu: GPU emulation configuration.
+        timing: Timing emulation configuration.
         server: Server configuration.
         distributed: Distributed deployment configuration.
         metrics: Metrics configuration.
@@ -251,6 +311,10 @@ class KVBenchConfig(BaseModel):
     gpu: GPUEmulationConfig = Field(
         default_factory=GPUEmulationConfig,
         description="GPU emulation configuration",
+    )
+    timing: TimingConfig = Field(
+        default_factory=TimingConfig,
+        description="Timing emulation configuration",
     )
     server: ServerConfig = Field(
         default_factory=ServerConfig,
