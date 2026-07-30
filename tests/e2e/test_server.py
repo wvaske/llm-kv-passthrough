@@ -77,7 +77,7 @@ class TestServerE2E:
     @pytest.mark.asyncio
     async def test_metrics(self, client: AsyncClient) -> None:
         """Test metrics endpoint."""
-        response = await client.get("/metrics")
+        response = await client.get("/stats")
         assert response.status_code == 200
         data = response.json()
         assert "requests_total" in data
@@ -158,7 +158,7 @@ class TestServerE2E:
             assert response.status_code == 200
 
         # Check metrics updated
-        metrics = await client.get("/metrics")
+        metrics = await client.get("/stats")
         assert metrics.json()["requests_total"] == 3
 
     @pytest.mark.asyncio
@@ -174,7 +174,7 @@ class TestServerE2E:
             },
         )
 
-        metrics1 = await client.get("/metrics")
+        metrics1 = await client.get("/stats")
         initial_misses = metrics1.json()["cache_misses"]
 
         # Second request with same prefix - should be cache hit
@@ -187,7 +187,7 @@ class TestServerE2E:
             },
         )
 
-        metrics2 = await client.get("/metrics")
+        metrics2 = await client.get("/stats")
         # Should have some cache hits now
         assert metrics2.json()["cache_hits"] > 0 or metrics2.json()["cache_misses"] >= initial_misses
 

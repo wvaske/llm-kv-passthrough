@@ -54,14 +54,22 @@ class LMCacheStack(KVStack):
         model_profile: str,
         instance_id: str = "kvbench",
         config_file: Path | str | None = None,
+        trace_file: Path | str | None = None,
+        random_fill: bool = True,
+        random_pool_mb: int = 256,
     ) -> None:
         self.instance_id = instance_id
         self.model_profile = model_profile
         self.config_file = config_file
+        self.trace_file = trace_file
+        self.random_fill = random_fill
+        self.random_pool_mb = random_pool_mb
         self.stats = KVStackStats()
         self._engine: Any = None
         self._connector: Any = None
         self._chunk_size: int | None = None
+        self._lmcache_config: Any = None
+        self._trace_recorder: Any = None
 
     @property
     def chunk_size(self) -> int:
@@ -117,6 +125,8 @@ class LMCacheStack(KVStack):
             num_layers=profile.layers,
             hidden_dim=profile.kv_heads * profile.head_dim,
             dtype=kv_dtype,
+            random_fill=self.random_fill,
+            random_pool_mb=self.random_pool_mb,
         )
         engine = LMCacheEngineBuilder.get_or_create(
             self.instance_id,
@@ -129,6 +139,14 @@ class LMCacheStack(KVStack):
         engine.post_init()
         self._engine = engine
         self._chunk_size = chunk_size
+        self._lmcache_config = lmcache_config
+
+        if self.trace_file is not None:
+            from kvbench.trace.recorder import TraceRecorder, install_lmcache_trace
+
+            self._trace_recorder = TraceRecorder(self.trace_file)
+            wrapped = install_lmcache_trace(engine, self._trace_recorder)
+            logger.info(f"KV trace enabled -> {self.trace_file} (backends: {wrapped})")
         logger.info(
             f"LMCache engine started (instance={self.instance_id}, "
             f"model={self.model_profile}, chunk_size={chunk_size}, "
@@ -192,10 +210,75 @@ class LMCacheStack(KVStack):
         ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), kv_dest=kv_dest)
         return int(ret_mask.sum())
 
+    def capacity_info(self) -> dict[str, Any]:
+        """Report configured tier capacities and KV sizing for this stack.
+
+        Returns:
+            Dict with chunk_size, bytes_per_token, chunk_bytes, per-tier
+            capacity in bytes, and total_capacity_bytes (0 when the tier is
+            disabled). Requires a started stack.
+        """
+        cfg = self._lmcache_config
+        if cfg is None:
+            raise RuntimeError("LMCacheStack not started; call start() first")
+        profile = get_model_profile(self.model_profile)
+        bytes_per_token = profile.total_kv_cache_bytes_per_token
+        gb = 1024**3
+        local_cpu_bytes = int(cfg.max_local_cpu_size * gb) if cfg.local_cpu else 0
+        local_disk_bytes = (
+            int(cfg.max_local_disk_size * gb) if getattr(cfg, "local_disk", None) else 0
+        )
+        return {
+            "chunk_size": self.chunk_size,
+            "bytes_per_token": bytes_per_token,
+            "chunk_bytes": bytes_per_token * self.chunk_size,
+            "vocab_size": profile.vocab_size,
+            "local_cpu_enabled": bool(cfg.local_cpu),
+            "local_cpu_capacity_bytes": local_cpu_bytes,
+            "local_disk_path": str(cfg.local_disk) if getattr(cfg, "local_disk", None) else None,
+            "local_disk_capacity_bytes": local_disk_bytes,
+            "remote_url": cfg.remote_url,
+            "total_capacity_bytes": local_cpu_bytes + local_disk_bytes,
+        }
+
+    def usage_info(self) -> dict[str, dict[str, Any]]:
+        """Report per-backend live usage from the running LMCache engine.
+
+        Returns:
+            {backend_class_name: {usage_bytes, keys}} for backends that
+            expose them (best-effort; LMCache internals).
+        """
+        engine = self._require_engine()
+        result: dict[str, dict[str, Any]] = {}
+        storage_manager = getattr(engine, "storage_manager", None)
+        backends = getattr(storage_manager, "storage_backends", None) or {}
+        for _name, backend in backends.items():
+            info: dict[str, Any] = {}
+            usage = getattr(backend, "usage", None)
+            if isinstance(usage, (int, float)):
+                info["usage_bytes"] = int(usage)
+            keys_dict = getattr(backend, "dict", None)
+            if keys_dict is not None:
+                try:
+                    info["keys"] = len(keys_dict)
+                except TypeError:
+                    pass
+            if info:
+                result[type(backend).__name__] = info
+        return result
+
+    @property
+    def trace_recorder(self) -> Any:
+        """The active TraceRecorder, or None when tracing is disabled."""
+        return self._trace_recorder
+
     async def close(self) -> None:
         if self._engine is None:
             return
         await asyncio.to_thread(self._close_sync)
+        if self._trace_recorder is not None:
+            self._trace_recorder.close()
+            self._trace_recorder = None
 
     def _close_sync(self) -> None:
         from lmcache.v1.cache_engine import LMCacheEngineBuilder

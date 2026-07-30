@@ -1,0 +1,24 @@
+# LMCache configuration for a local-disk KV cache benchmark.
+#
+# This file is LMCache's own config format, passed verbatim to the engine
+# (kvbench serve --lmcache-config examples/lmcache-local-disk.yaml).
+# KV-Bench deliberately has no storage settings of its own — the system
+# under test owns them.
+#
+# Sizing note: KV bytes scale with the emulated model. For llama-3.1-8b
+# each token is 128 KiB of KV, so a 256-token chunk is a 32 MiB file.
+# Steady-state warmup fills (max_local_cpu_size + max_local_disk_size)
+# x fill-factor; size the tiers to what the storage under test should see.
+
+chunk_size: 256
+
+# L1: CPU memory tier (GB)
+local_cpu: true
+max_local_cpu_size: 1.0
+
+# L2: local disk tier (GB). Point this at the filesystem/device under test.
+local_disk: "file:///tmp/kvbench-cache/"
+max_local_disk_size: 2.0
+
+# Eviction policy for the tiers
+# cache_policy: "LRU"

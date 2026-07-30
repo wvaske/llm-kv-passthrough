@@ -12,10 +12,11 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from kvbench.core.config import KVBenchConfig
 from kvbench.kv.factory import create_kv_stack
+from kvbench.metrics.prometheus import CONTENT_TYPE_LATEST, MetricsExporter
 from kvbench.servers.combined import CombinedServer
 from kvbench.servers.decode import DecodeServer
 from kvbench.servers.factory import create_server
@@ -29,6 +30,7 @@ from kvbench.servers.openai_compat import (
 )
 from kvbench.servers.prefill import PrefillServer
 from kvbench.servers.proxy import DisaggregatedProxy
+from kvbench.servers.warmup import WarmupController, WarmupRequest
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -58,6 +60,8 @@ class KVBenchApp:
             None
         )
         self._kv = None
+        self._warmup: WarmupController | None = None
+        self._metrics = MetricsExporter(self)
 
         @asynccontextmanager
         async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
@@ -83,6 +87,7 @@ class KVBenchApp:
         if self.config.server.server_type != "proxy":
             self._kv = create_kv_stack(self.config)
             await self._kv.start()
+            self._warmup = WarmupController(self._kv)
 
         # Create server
         self._server = create_server(self.config, self._kv)
@@ -95,6 +100,9 @@ class KVBenchApp:
     async def _shutdown(self) -> None:
         """Cleanup server components on shutdown."""
         logger.info("Shutting down KV-Bench server...")
+
+        if self._warmup is not None:
+            await self._warmup.cancel()
 
         if self._server:
             await self._server.stop()
@@ -115,11 +123,76 @@ class KVBenchApp:
             return await self._server.health_check()
 
         @self.app.get("/metrics")
-        async def get_metrics() -> MetricsResponse:
-            """Get server metrics."""
+        async def get_metrics() -> Response:
+            """Prometheus metrics endpoint."""
+            return Response(content=self._metrics.render(), media_type=CONTENT_TYPE_LATEST)
+
+        @self.app.get("/stats")
+        async def get_stats() -> MetricsResponse:
+            """Get server metrics as JSON."""
             if self._server is None:
                 raise HTTPException(status_code=503, detail="Server not initialized")
             return await self._server.get_metrics()
+
+        @self.app.get("/kvbench/state")
+        async def get_kv_state() -> JSONResponse:
+            """KV stack capacity, live tier usage, and operation stats."""
+            if self._kv is None:
+                raise HTTPException(
+                    status_code=404, detail="This server type has no KV stack (proxy?)"
+                )
+            state: dict = {}
+            capacity_fn = getattr(self._kv, "capacity_info", None)
+            if capacity_fn is not None:
+                state["capacity"] = capacity_fn()
+            usage_fn = getattr(self._kv, "usage_info", None)
+            if usage_fn is not None:
+                state["usage"] = usage_fn()
+            stats = self._kv.stats
+            state["kv_stats"] = {
+                "lookups": stats.lookups,
+                "lookup_tokens": stats.lookup_tokens,
+                "hit_tokens": stats.hit_tokens,
+                "token_hit_rate": stats.token_hit_rate,
+                "stores": stats.stores,
+                "stored_tokens": stats.stored_tokens,
+                "retrieves": stats.retrieves,
+                "retrieved_tokens": stats.retrieved_tokens,
+                "errors": stats.errors,
+            }
+            return JSONResponse(content=state)
+
+        @self.app.post("/kvbench/warmup", status_code=202)
+        async def start_warmup(request: WarmupRequest) -> JSONResponse:
+            """Fill the KV stack to steady state (background task)."""
+            if self._warmup is None:
+                raise HTTPException(
+                    status_code=404, detail="This server type has no KV stack (proxy?)"
+                )
+            try:
+                status = self._warmup.start(request)
+            except RuntimeError as e:
+                raise HTTPException(status_code=409, detail=str(e)) from None
+            return JSONResponse(status_code=202, content=status.to_dict())
+
+        @self.app.get("/kvbench/warmup")
+        async def warmup_status() -> JSONResponse:
+            """Status of the current/last warmup run."""
+            if self._warmup is None:
+                raise HTTPException(
+                    status_code=404, detail="This server type has no KV stack (proxy?)"
+                )
+            return JSONResponse(content=self._warmup.status.to_dict())
+
+        @self.app.delete("/kvbench/warmup")
+        async def cancel_warmup() -> JSONResponse:
+            """Cancel a running warmup."""
+            if self._warmup is None:
+                raise HTTPException(
+                    status_code=404, detail="This server type has no KV stack (proxy?)"
+                )
+            await self._warmup.cancel()
+            return JSONResponse(content=self._warmup.status.to_dict())
 
         @self.app.get("/v1/models")
         async def list_models() -> ModelList:
@@ -149,6 +222,9 @@ class KVBenchApp:
                 )
 
             # Non-streaming response
+            import time as _time
+
+            start = _time.perf_counter()
             if isinstance(self._server, (CombinedServer, DisaggregatedProxy, PrefillServer)):
                 result = await self._server.chat_completions(request)
             elif isinstance(self._server, DecodeServer):
@@ -158,6 +234,7 @@ class KVBenchApp:
                 result = await self._server.chat_completions(request, context_length)
             else:
                 raise HTTPException(status_code=500, detail="Unknown server type")
+            self._metrics.request_duration.observe(_time.perf_counter() - start)
 
             if isinstance(result, ErrorResponse):
                 return JSONResponse(
@@ -175,19 +252,32 @@ class KVBenchApp:
             return JSONResponse(status_code=500, content=error.model_dump())
 
     async def _stream_response(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
-        """Generate streaming response."""
+        """Generate streaming response, observing TTFT and total duration."""
+        import time as _time
+
         if self._server is None:
             yield ErrorResponse.create("Server not initialized", "server_error").model_dump_json()
             return
 
+        start = _time.perf_counter()
+        first_token_seen = False
+
         if isinstance(self._server, (CombinedServer, DisaggregatedProxy)):
             async for chunk in self._server.chat_completions_stream(request):
+                if not first_token_seen:
+                    self._metrics.ttft.observe(_time.perf_counter() - start)
+                    first_token_seen = True
                 yield chunk
+            self._metrics.request_duration.observe(_time.perf_counter() - start)
         elif isinstance(self._server, DecodeServer):
             prompt = request.prompt_text or ""
             context_length = max(1, len(prompt) // 4)
             async for chunk in self._server.chat_completions_stream(request, context_length):
+                if not first_token_seen:
+                    self._metrics.ttft.observe(_time.perf_counter() - start)
+                    first_token_seen = True
                 yield chunk
+            self._metrics.request_duration.observe(_time.perf_counter() - start)
         else:
             # PrefillServer doesn't support streaming well
             error = ErrorResponse.create(

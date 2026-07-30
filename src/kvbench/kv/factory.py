@@ -52,6 +52,9 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             model_profile=config.server.model_profile,
             instance_id=config.instance_id,
             config_file=config.kv.lmcache_config_file,
+            trace_file=config.kv.trace_file,
+            random_fill=config.kv.random_fill,
+            random_pool_mb=config.kv.random_pool_mb,
         )
 
     if stack == "kvbm":

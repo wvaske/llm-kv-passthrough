@@ -41,6 +41,24 @@ class KVStackConfig(BaseModel):
         default=None,
         description="Path to LMCache's own config file (LMCACHE_* env vars are used when unset)",
     )
+    trace_file: Path | None = Field(
+        default=None,
+        description="Path to a JSONL file recording every logical and physical "
+        "storage operation the KV stack performs (for FIO workload derivation)",
+    )
+    random_fill: bool = Field(
+        default=True,
+        description="Fill mock KV tensors with random data so stored bytes are "
+        "incompressible like real KV cache (storage systems with compression "
+        "or dedup report unrealistically good numbers against zero-filled data)",
+    )
+    random_pool_mb: int = Field(
+        default=256,
+        ge=16,
+        le=4096,
+        description="Size of the pre-generated random pool KV tensors are filled "
+        "from (larger pools reduce cross-chunk content repetition)",
+    )
 
     @field_validator("lmcache_config_file", mode="before")
     @classmethod

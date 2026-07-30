@@ -6,4 +6,6 @@ This module provides metrics and monitoring:
 - Metrics collectors for various subsystems
 """
 
-__all__: list[str] = []
+from kvbench.metrics.prometheus import CONTENT_TYPE_LATEST, KVBenchCollector, MetricsExporter
+
+__all__ = ["CONTENT_TYPE_LATEST", "KVBenchCollector", "MetricsExporter"]

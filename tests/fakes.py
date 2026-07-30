@@ -52,6 +52,23 @@ class FakeKVStack(KVStack):
         self.stats.stores += 1
         self.stats.stored_tokens += len(tokens) - skip_leading
 
+    def capacity_info(self) -> dict:
+        return {
+            "chunk_size": self._chunk_size,
+            "bytes_per_token": 1,
+            "chunk_bytes": self._chunk_size,
+            "vocab_size": 128256,
+            "local_cpu_enabled": True,
+            "local_cpu_capacity_bytes": 32768,
+            "local_disk_path": None,
+            "local_disk_capacity_bytes": 32768,
+            "remote_url": None,
+            "total_capacity_bytes": 65536,
+        }
+
+    def usage_info(self) -> dict:
+        return {"FakeBackend": {"usage_bytes": len(self._prefixes), "keys": len(self._prefixes)}}
+
     async def retrieve(self, tokens: list[int]) -> int:
         hit = self._hit_length(tokens)
         self.stats.retrieves += 1

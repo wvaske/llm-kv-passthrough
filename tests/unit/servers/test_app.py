@@ -19,7 +19,14 @@ from kvbench.core.config import (
     ServerConfig,
 )
 from kvbench.servers.app import create_app, load_config
+from kvbench.servers.warmup import WarmupController
 from tests.fakes import FakeKVStack
+
+
+@pytest.fixture(autouse=True)
+def fast_eviction_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(WarmupController, "EVICTION_CHECK_ATTEMPTS", 1)
+    monkeypatch.setattr(WarmupController, "EVICTION_CHECK_DELAY_S", 0.0)
 
 
 @pytest.fixture(autouse=True)
@@ -191,6 +198,79 @@ class TestHttpEndpoints:
                 "max_tokens": 1,
             },
         )
-        metrics = client.get("/metrics").json()
+        metrics = client.get("/stats").json()
         assert metrics["requests_total"] == 1
         assert metrics["requests_success"] == 1
+
+
+class TestObservabilityEndpoints:
+    """Prometheus metrics, JSON stats, and KV state endpoints."""
+
+    def test_metrics_is_prometheus_format(self) -> None:
+        with TestClient(create_app(make_config())) as client:
+            response = client.get("/metrics")
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/plain")
+            body = response.text
+            assert "kvbench_kv_ops_total" in body
+            assert "kvbench_request_duration_seconds" in body
+
+    def test_metrics_reflect_kv_activity(self) -> None:
+        with TestClient(create_app(make_config())) as client:
+            client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "llama-3.1-8b",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hello " * 300}],
+                },
+            )
+            body = client.get("/metrics").text
+            assert 'kvbench_kv_ops_total{op="lookup"} 1.0' in body
+            assert 'kvbench_requests_total{status="success"} 1.0' in body
+
+    def test_stats_is_json(self) -> None:
+        with TestClient(create_app(make_config())) as client:
+            data = client.get("/stats").json()
+            assert "requests_total" in data
+            assert "cache_hits" in data
+
+    def test_kv_state_reports_capacity_and_usage(self) -> None:
+        with TestClient(create_app(make_config())) as client:
+            state = client.get("/kvbench/state").json()
+            assert state["capacity"]["total_capacity_bytes"] == 65536
+            assert "FakeBackend" in state["usage"]
+            assert state["kv_stats"]["lookups"] == 0
+
+
+class TestWarmupEndpoints:
+    """Warmup lifecycle over HTTP."""
+
+    def test_warmup_runs_to_completion(self) -> None:
+        import time as _time
+
+        with TestClient(create_app(make_config())) as client:
+            response = client.post("/kvbench/warmup", json={"seq_tokens": 256, "concurrency": 2})
+            assert response.status_code == 202
+            assert response.json()["state"] == "running"
+
+            for _ in range(100):
+                status = client.get("/kvbench/warmup").json()
+                if status["state"] != "running":
+                    break
+                _time.sleep(0.05)
+            assert status["state"] == "done"
+            assert status["stored_bytes"] >= 65536
+
+    def test_warmup_status_idle_initially(self) -> None:
+        with TestClient(create_app(make_config())) as client:
+            assert client.get("/kvbench/warmup").json()["state"] == "idle"
+
+    def test_warmup_unavailable_on_proxy(self) -> None:
+        config = KVBenchConfig(
+            instance_id="proxy-test",
+            server=ServerConfig(server_type="proxy"),
+        )
+        with TestClient(create_app(config)) as client:
+            assert client.post("/kvbench/warmup", json={}).status_code == 404
+            assert client.get("/kvbench/state").status_code == 404

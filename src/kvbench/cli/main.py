@@ -42,6 +42,17 @@ def serve(
         help="Path to LMCache's own config file (storage backends, tier sizes); "
         "LMCACHE_* env vars are used when unset",
     ),
+    trace_file: str | None = typer.Option(
+        None,
+        "--trace-file",
+        help="Record every KV storage operation (logical + file I/O) to this "
+        "JSONL file, for `kvbench trace2fio`",
+    ),
+    random_fill: bool | None = typer.Option(
+        None,
+        "--random-fill/--no-random-fill",
+        help="Fill KV tensors with incompressible random data (default: on)",
+    ),
     workers: int | None = typer.Option(None, "--workers", "-w", help="Number of worker processes"),
     tp_size: int | None = typer.Option(
         None, "--tp-size", help="Tensor parallelism size for the emulated GPUs"
@@ -120,8 +131,17 @@ def serve(
     }
     if timing_updates:
         updates["timing"] = cfg.timing.model_copy(update=timing_updates)
-    if lmcache_config is not None:
-        updates["kv"] = cfg.kv.model_copy(update={"lmcache_config_file": lmcache_config})
+    kv_updates = {
+        key: value
+        for key, value in {
+            "lmcache_config_file": lmcache_config,
+            "trace_file": trace_file,
+            "random_fill": random_fill,
+        }.items()
+        if value is not None
+    }
+    if kv_updates:
+        updates["kv"] = cfg.kv.model_copy(update=kv_updates)
     if updates:
         # Re-validate the merged configuration (model_copy skips validators)
         cfg = KVBenchConfig.model_validate(cfg.model_copy(update=updates).model_dump(mode="json"))
@@ -180,6 +200,192 @@ def serve(
             os.unlink(resolved_config_path)
         except OSError:
             pass
+
+
+@app.command()
+def warmup(
+    url: str = typer.Option("http://localhost:8000", "--url", "-u", help="KV-Bench server URL"),
+    target_gb: float | None = typer.Option(
+        None,
+        "--target-gb",
+        help="Explicit fill target in GB (default: fill-factor x configured tier capacity)",
+    ),
+    fill_factor: float = typer.Option(
+        1.25,
+        "--fill-factor",
+        help="Multiple of total tier capacity to store (>1 forces eviction)",
+    ),
+    seq_tokens: int = typer.Option(
+        2048, "--seq-tokens", help="Tokens per stored sequence (chunk-aligned)"
+    ),
+    concurrency: int = typer.Option(4, "--concurrency", help="Parallel store workers"),
+    wait: bool = typer.Option(
+        True, "--wait/--no-wait", help="Poll until the warmup finishes"
+    ),
+) -> None:
+    """Fill the server's KV cache to steady state (all tiers full, evicting).
+
+    Warmup runs inside the server process (local cache tiers belong to the
+    engine instance); this command starts it and reports progress.
+    """
+    import time as _time
+
+    import httpx
+
+    body: dict = {
+        "fill_factor": fill_factor,
+        "seq_tokens": seq_tokens,
+        "concurrency": concurrency,
+    }
+    if target_gb is not None:
+        body["target_gb"] = target_gb
+
+    with httpx.Client(base_url=url, timeout=30.0) as client:
+        response = client.post("/kvbench/warmup", json=body)
+        if response.status_code == 409:
+            console.print(f"[red]{response.json().get('detail')}[/red]")
+            raise typer.Exit(1)
+        response.raise_for_status()
+        status = response.json()
+        console.print(
+            f"[green]Warmup started:[/green] target "
+            f"{status['target_bytes'] / 1e9:.2f} GB, params {status['params']}"
+        )
+
+        if not wait:
+            console.print("Poll with: GET /kvbench/warmup")
+            return
+
+        from rich.progress import (
+            BarColumn,
+            Progress,
+            TextColumn,
+            TimeElapsedColumn,
+        )
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.percentage:>3.0f}%"),
+            TextColumn("{task.fields[rate]} MB/s"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            bar = progress.add_task("Filling KV cache", total=status["target_bytes"], rate="0.0")
+            while True:
+                _time.sleep(2)
+                status = client.get("/kvbench/warmup").json()
+                progress.update(
+                    bar,
+                    completed=min(status["stored_bytes"], status["target_bytes"]),
+                    rate=f"{status['rate_mb_s']:.0f}",
+                )
+                if status["state"] != "running":
+                    break
+
+    if status["state"] == "done":
+        evicting = status.get("evicting")
+        console.print(
+            f"[green]Warmup complete:[/green] {status['stored_bytes'] / 1e9:.2f} GB "
+            f"in {status['sequences']} sequences ({status['elapsed_s']}s)"
+        )
+        if evicting:
+            console.print(
+                "[green]Steady state confirmed:[/green] earliest stored data has been evicted"
+            )
+        else:
+            console.print(
+                "[yellow]Warning: earliest stored data is still cached — the cache "
+                "may not be full yet. Increase --fill-factor or --target-gb.[/yellow]"
+            )
+    else:
+        console.print(f"[red]Warmup {status['state']}: {status.get('error') or ''}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def trace2fio(
+    trace: str = typer.Argument(..., help="KV trace JSONL file (from serve --trace-file)"),
+    output: str = typer.Option("kv_workload.fio", "--output", "-o", help="FIO job file to write"),
+    backend: str = typer.Option(
+        "LocalDiskBackend", "--backend", "-b", help="Backend class to model"
+    ),
+    directory: str = typer.Option(
+        "/mnt/kvcache", "--directory", "-d", help="Target directory in the FIO job"
+    ),
+    runtime: int = typer.Option(300, "--runtime", help="FIO runtime in seconds"),
+    paced: bool = typer.Option(
+        False,
+        "--paced",
+        help="Cap FIO at the observed throughput (reproduce intensity, not just shape)",
+    ),
+) -> None:
+    """Derive an FIO job file from a recorded KV I/O trace.
+
+    Analyzes the logical and physical operations LMCache performed (chunk
+    writes, reads, evictions, parallelism) and emits an FIO job that
+    reproduces that workload shape on a raw filesystem.
+    """
+    from kvbench.trace.analyze import list_backends, load_events, summarize
+    from kvbench.trace.fio import generate_fio_job
+
+    events = load_events(trace)
+    if not events:
+        console.print(f"[red]No events found in {trace}[/red]")
+        raise typer.Exit(1)
+
+    available = list_backends(events)
+    if backend not in available:
+        console.print(
+            f"[red]Backend {backend!r} not in trace. Backends present: {available}[/red]"
+        )
+        raise typer.Exit(1)
+
+    summary = summarize(events, backend=backend)
+
+    table = Table(title=f"KV workload summary ({backend})", show_header=True)
+    table.add_column("Metric", style="green")
+    table.add_column("Write")
+    table.add_column("Read")
+    write, read = summary.io_write, summary.io_read
+    table.add_row("Operations", str(write.count), str(read.count))
+    table.add_row("Bytes", f"{write.total_bytes / 1e9:.2f} GB", f"{read.total_bytes / 1e9:.2f} GB")
+    table.add_row(
+        "Dominant size",
+        f"{(write.dominant_size or 0) / 1e6:.1f} MB",
+        f"{(read.dominant_size or 0) / 1e6:.1f} MB",
+    )
+    table.add_row("Max concurrency", str(write.max_concurrency), str(read.max_concurrency))
+    table.add_row("Threads", str(len(write.threads)), str(len(read.threads)))
+    table.add_row(
+        "Median latency",
+        f"{write.median_dur_ms or 0:.2f} ms",
+        f"{read.median_dur_ms or 0:.2f} ms",
+    )
+    table.add_row(
+        "Throughput",
+        f"{write.bytes_per_sec / 1e6:.1f} MB/s",
+        f"{read.bytes_per_sec / 1e6:.1f} MB/s",
+    )
+    console.print(table)
+    console.print(
+        f"Evictions (deletes): {summary.logical_remove.count}; "
+        f"steady-state files: {summary.steady_state_files}; "
+        f"O_DIRECT: {summary.use_odirect}"
+    )
+
+    try:
+        job = generate_fio_job(
+            summary, directory=directory, runtime_s=runtime, paced=paced
+        )
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    with open(output, "w") as f:
+        f.write(job)
+    console.print(f"\n[green]FIO job written to {output}[/green]")
+    console.print(f"Run with: fio {output}  (adjust directory= first)")
 
 
 @app.command()

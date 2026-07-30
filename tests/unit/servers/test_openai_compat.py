@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from kvbench.servers.openai_compat import (
@@ -11,18 +9,12 @@ from kvbench.servers.openai_compat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatMessage,
-    Choice,
-    ChoiceMessage,
-    DeltaMessage,
     ErrorResponse,
     HealthResponse,
     MessageRole,
     MetricsResponse,
     ModelInfo,
     ModelList,
-    ResponseFormat,
-    StreamChoice,
-    Usage,
 )
 
 

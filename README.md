@@ -10,10 +10,24 @@ Distributed mock LLM serving system for benchmarking KV cache management without
 - **Storage configured through LMCache's own application config** — CPU RAM,
   local disk, and remote backends (Redis, Mooncake, ...) via LMCache's
   config file or `LMCACHE_*` environment variables
+- **Steady-state warmup** — one command fills every cache tier past capacity
+  so benchmarks measure the eviction-active steady state, not an empty cache
+- **Prometheus metrics** at `/metrics` — KV operations, token hit rate, live
+  tier usage, warmup progress, request latency and TTFT histograms
+- **KV I/O tracing → FIO** — record every logical and physical storage
+  operation LMCache performs, then `kvbench trace2fio` derives an FIO job
+  file reproducing the workload (chunk sizes, read/write mix, writer
+  parallelism, eviction churn)
+- **Incompressible KV data** — mock KV tensors are filled with random bytes
+  so storage systems with compression/dedup see realistic entropy
 - **Disaggregated prefill/decode** architecture emulation
-- **OpenAI-compatible API** for easy integration
+- **OpenAI-compatible API** — benchmark with NVIDIA AIPerf/GenAI-Perf or any
+  OpenAI-style load generator
 - **GPU timing emulation** based on real hardware specs (roofline model)
-- **GenAI-Perf compatible** for standardized benchmarking
+
+Planned future work: NVIDIA Dynamo **KVBM** as a second KV stack (blocked on
+a CPU device mode in upstream kvbm — its data plane requires the CUDA driver
+at initialization; see `docs/architecture/connectors.md`).
 
 ## Installation
 
@@ -57,6 +71,38 @@ curl http://localhost:8000/v1/chat/completions \
     "max_tokens": 100
   }'
 ```
+
+### Benchmark Workflow (steady state → measure → derive FIO)
+
+```bash
+# 1. Serve with an LMCache config sized for the storage under test,
+#    recording every KV storage operation to a trace file
+kvbench serve --model llama-3.1-8b \
+  --lmcache-config examples/lmcache-local-disk.yaml \
+  --trace-file /tmp/kv-trace.jsonl
+
+# 2. Fill all cache tiers past capacity so every further store evicts
+#    (verifies steady state by confirming the earliest data was evicted)
+kvbench warmup --url http://localhost:8000 --fill-factor 1.25
+
+# 3. Run your benchmark against the OpenAI endpoint (AIPerf, GenAI-Perf, ...)
+#    and watch KV activity live at http://localhost:8000/metrics
+
+# 4. Derive an FIO job file that reproduces the disk workload LMCache
+#    generated: chunk file size, read/write mix, concurrent writers,
+#    eviction churn — reviewable, commented, hand-tunable
+kvbench trace2fio /tmp/kv-trace.jsonl -o kv_workload.fio --directory /mnt/nvme/kvtest
+fio kv_workload.fio
+```
+
+Key endpoints:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST/GET/DELETE /kvbench/warmup` | Start / poll / cancel steady-state warmup |
+| `GET /kvbench/state` | Tier capacities, live usage, KV op stats |
+| `GET /metrics` | Prometheus exposition format |
+| `GET /stats` | JSON metrics summary |
 
 ### Docker Deployment
 
