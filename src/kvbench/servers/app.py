@@ -228,9 +228,13 @@ class KVBenchApp:
             if isinstance(self._server, (CombinedServer, DisaggregatedProxy, PrefillServer)):
                 result = await self._server.chat_completions(request)
             elif isinstance(self._server, DecodeServer):
-                # For decode-only server, assume context_length from prompt
+                # Decode-only server: derive context length with the same
+                # simulated tokenizer the KV path uses, so timing and KV
+                # token counts agree.
                 prompt = request.prompt_text or ""
-                context_length = max(1, len(prompt) // 4)
+                context_length = max(
+                    1, len(self._server.processor.simulate_tokenize(prompt))
+                )
                 result = await self._server.chat_completions(request, context_length)
             else:
                 raise HTTPException(status_code=500, detail="Unknown server type")
@@ -271,7 +275,9 @@ class KVBenchApp:
             self._metrics.request_duration.observe(_time.perf_counter() - start)
         elif isinstance(self._server, DecodeServer):
             prompt = request.prompt_text or ""
-            context_length = max(1, len(prompt) // 4)
+            context_length = max(
+                1, len(self._server.processor.simulate_tokenize(prompt))
+            )
             async for chunk in self._server.chat_completions_stream(request, context_length):
                 if not first_token_seen:
                     self._metrics.ttft.observe(_time.perf_counter() - start)
