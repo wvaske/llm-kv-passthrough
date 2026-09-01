@@ -193,6 +193,27 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         vocab_size=128256,
         max_seq_len=131072,
     ),
+    # Llama 3.2 family
+    "llama-3.2-1b": ModelProfile(
+        name="Llama 3.2 1B",
+        layers=16,
+        hidden=2048,
+        kv_heads=8,
+        num_heads=32,
+        intermediate=8192,
+        vocab_size=128256,
+        max_seq_len=131072,
+    ),
+    "llama-3.2-3b": ModelProfile(
+        name="Llama 3.2 3B",
+        layers=28,
+        hidden=3072,
+        kv_heads=8,
+        num_heads=24,
+        intermediate=8192,
+        vocab_size=128256,
+        max_seq_len=131072,
+    ),
     # Qwen 2.5 family
     "qwen-2.5-7b": ModelProfile(
         name="Qwen 2.5 7B",

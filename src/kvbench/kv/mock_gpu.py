@@ -16,6 +16,8 @@ Tensor layout is MemoryFormat.KV_2LTD: [2 (K/V), layers, tokens, kv_heads * head
 
 from __future__ import annotations
 
+import threading
+
 import torch
 from lmcache.v1.gpu_connector.gpu_connectors import GPUConnectorInterface
 from lmcache.v1.memory_management import MemoryFormat, MemoryObj
@@ -60,6 +62,9 @@ class MockGPUConnector(GPUConnectorInterface):
                 generator=generator,
             )
             self._offset_gen = torch.Generator().manual_seed(0xF111)
+            # torch.Generator is not thread-safe; new_kv_tensor runs under
+            # asyncio.to_thread with real concurrency, so serialize access.
+            self._offset_lock = threading.Lock()
 
     def new_kv_tensor(self, num_tokens: int) -> torch.Tensor:
         """Allocate a KV tensor for a token sequence.
@@ -78,9 +83,10 @@ class MockGPUConnector(GPUConnectorInterface):
             pos = 0
             remaining = flat.numel()
             while remaining > 0:
-                offset = int(
-                    torch.randint(0, pool_size, (1,), generator=self._offset_gen)
-                )
+                with self._offset_lock:
+                    offset = int(
+                        torch.randint(0, pool_size, (1,), generator=self._offset_gen)
+                    )
                 length = min(remaining, pool_size - offset)
                 flat[pos : pos + length] = pool[offset : offset + length]
                 pos += length
