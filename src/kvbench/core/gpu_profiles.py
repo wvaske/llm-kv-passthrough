@@ -78,6 +78,51 @@ class GPUProfile:
 # cross-GPU comparisons are consistent; NVIDIA marketing numbers for
 # Hopper/Ada are typically the 2:4 structured-sparsity figures (2x dense).
 GPU_PROFILES: dict[str, GPUProfile] = {
+    "B200_SXM": GPUProfile(
+        name="NVIDIA B200 SXM (Blackwell)",
+        bf16_tflops=2250.0,          # published dense
+        hbm_bandwidth_tb_s=8.0,
+        hbm_capacity_gb=180,         # software-visible (192 GB physical HBM3e)
+        nvlink_bandwidth_gb_s=1800.0,  # NVLink 5
+        tdp_watts=1000,
+    ),
+    "MI355X_OAM": GPUProfile(
+        name="AMD Instinct MI355X (CDNA 4)",
+        bf16_tflops=2500.0,          # published dense (5.0 PF figure is sparse)
+        hbm_bandwidth_tb_s=8.0,
+        hbm_capacity_gb=288,         # HBM3e
+        nvlink_bandwidth_gb_s=1075.0,  # Infinity Fabric gen4, 7x153.6 GB/s all-to-all
+        tdp_watts=1400,
+    ),
+    # ---- Projected / roadmap profiles (marked in the name). Numbers are the
+    # best public estimates as of Sept 2026; BF16 is derived FP8-dense/2
+    # (the FP4->FP8 2x ladder is broken on NVIDIA post-Blackwell-Ultra, so
+    # never derive BF16 from FP4). One "GPU" = one package (NVL144 = 72
+    # Rubin packages of 2 dies; NVL576 = 144 Rubin Ultra packages of 4).
+    "RUBIN_VR200": GPUProfile(
+        name="NVIDIA Rubin VR200 (projected, per package)",
+        bf16_tflops=8300.0,          # derived: ~16.7 PF FP8 dense / 2
+        hbm_bandwidth_tb_s=20.0,     # HBM4; 22 TB/s target lowered by suppliers
+        hbm_capacity_gb=288,
+        nvlink_bandwidth_gb_s=3600.0,  # NVLink 6
+        tdp_watts=1800,              # Max-Q config (Max-P reportedly 2300)
+    ),
+    "RUBIN_ULTRA": GPUProfile(
+        name="NVIDIA Rubin Ultra (projected, per 4-die package, NVL576/Kyber)",
+        bf16_tflops=17400.0,         # derived: ~34.7 PF FP8 dense / 2 (slideware)
+        hbm_bandwidth_tb_s=32.0,     # HBM4e, rack 4.6 PB/s / 144 packages
+        hbm_capacity_gb=1024,        # 1 TB per package (16 stacks over 4 dies)
+        nvlink_bandwidth_gb_s=10400.0,  # NVLink 7, rack-aggregate division
+        tdp_watts=3600,
+    ),
+    "MI455X_HELIOS": GPUProfile(
+        name="AMD Instinct MI455X / Helios rack (projected, CDNA 5)",
+        bf16_tflops=10000.0,         # derived: ~20 PF FP8 dense / 2
+        hbm_bandwidth_tb_s=23.3,     # HBM4 (launch spec, up from 19.6 preview)
+        hbm_capacity_gb=432,
+        nvlink_bandwidth_gb_s=3600.0,  # UALink/IF scale-up per GPU
+        tdp_watts=2200,              # unconfirmed estimate (rack ~245 kW / 72)
+    ),
     "B300_SXM": GPUProfile(
         name="NVIDIA B300 SXM (Blackwell Ultra)",
         bf16_tflops=2250.0,          # dense BF16 (HGX B300: 36 PF sparse / 8 GPUs / 2)

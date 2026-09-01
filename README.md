@@ -60,6 +60,57 @@ kvbench list-profiles
 kvbench info --gpu H100_SXM --model llama-3.1-8b
 ```
 
+### Emulating Different Hardware and Models
+
+Every serve is a combination of a **model profile** (KV-cache geometry: how
+many bytes per token flow to LMCache) and a **GPU profile** (roofline timing:
+how fast the fake GPU "computes"). List them, inspect a combination, then
+serve it:
+
+```bash
+kvbench list-profiles                       # all GPU + model profiles
+kvbench info --gpu B300_SXM --model qwen3.8-27b
+kvbench serve --model llama-3.1-70b --gpu H200_SXM --tp-size 4
+```
+
+`--tp-size N` emulates an N-GPU tensor-parallel server: one real LMCache
+engine per rank (world_size=N, worker_id=0..N-1), each storing its KV shard,
+so a logical chunk becomes N files on storage — the same I/O pattern a real
+multi-GPU node produces. KV heads replicate when N exceeds the model's
+kv_heads, exactly as vLLM does.
+
+**Current-generation hardware** (datasheet numbers): `H100_SXM`/`H100_PCIe`,
+`H200_SXM`, `B200_SXM`, `B300_SXM`, `A100_SXM`/`A100_PCIe`, `L4`, `L40S`,
+and AMD `MI355X_OAM`.
+
+**Future systems** (projected — best public roadmap estimates, Sept 2026;
+BF16 derived as FP8-dense/2, one "GPU" = one package):
+
+| Profile | System | HBM | BW | BF16 dense |
+|---|---|---|---|---|
+| `RUBIN_VR200` | NVIDIA Rubin NVL144 (2026-27) | 288 GB HBM4 | 20 TB/s | ~8.3 PF |
+| `RUBIN_ULTRA` | NVIDIA Rubin Ultra NVL576 / Kyber (2027) | 1 TB HBM4e | ~32 TB/s | ~17.4 PF |
+| `MI455X_HELIOS` | AMD Helios rack, MI455X (H2 2026) | 432 GB HBM4 | 23.3 TB/s | ~10 PF |
+
+Projected profiles carry "(projected)" in their names; treat their absolute
+latencies as scenario estimates, not predictions — the KV storage volumes
+they drive are exact for the chosen model.
+
+**Model profiles** cover Llama 3.1 (8B/70B/405B), Llama 3.2 (1B/3B),
+**Llama 4 Scout** (MoE, 192 KiB KV/token, 10M context), Qwen 2.5 (7B/72B),
+**Qwen3.8-27B** (hybrid attention — only 16 of 64 layers hold per-token KV:
+64 KiB/token), **DeepSeek V3.2** (MLA compressed cache: 68.6 KiB/token),
+Mistral 7B, Mixtral 8x7B. Adding a model is a ~10-line `ModelProfile` entry
+in `src/kvbench/core/models.py` from the model's `config.json` (hybrid
+attention via `kv_layers`, non-standard head sizes via `head_dim_override`).
+
+Example — a 70B on an 8x Rubin node with a big NVMe cache:
+
+```bash
+kvbench serve --model llama-3.1-70b --gpu RUBIN_VR200 --tp-size 8 \
+  --lmcache-config examples/lmcache-local-disk.yaml
+```
+
 ### Send Requests
 
 ```bash

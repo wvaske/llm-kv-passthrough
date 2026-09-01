@@ -228,6 +228,37 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         vocab_size=128256,
         max_seq_len=131072,
     ),
+    # Llama 4 family (MoE; KV depends only on the GQA attention config —
+    # the dense-formula param estimate under-reports total params and the
+    # roofline sees ~active-expert compute, which is the relevant figure)
+    "llama-4-scout": ModelProfile(
+        name="Llama 4 Scout 17B-16E",
+        layers=48,
+        hidden=5120,
+        kv_heads=8,
+        num_heads=40,
+        head_dim_override=128,
+        intermediate=16384,          # intermediate_size_mlp
+        vocab_size=202048,
+        max_seq_len=10485760,        # 10M context
+    ),
+    # DeepSeek V3.2 (MLA). MLA caches ONE 576-element latent per layer per
+    # token (kv_lora_rank 512 + qk_rope_head_dim 64), not separate K and V.
+    # The standard formula multiplies by 2 for K+V, so head_dim is encoded
+    # as 576/2 = 288 to yield the correct 1,152 B/layer/token at bf16
+    # (61 layers -> 68.6 KiB/token). head_dim here is a cache-math encoding,
+    # not the attention geometry.
+    "deepseek-v3.2": ModelProfile(
+        name="DeepSeek V3.2 (MLA)",
+        layers=61,
+        hidden=7168,
+        kv_heads=1,
+        num_heads=128,
+        head_dim_override=288,       # see note above (MLA single-latent encoding)
+        intermediate=18432,
+        vocab_size=129280,
+        max_seq_len=163840,
+    ),
     # Qwen 3.8 family
     "qwen3.8-27b": ModelProfile(
         name="Qwen3.8 27B",

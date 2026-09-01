@@ -413,3 +413,42 @@ class TestKVCacheCalculations:
             dtype="fp8",
         )
         assert profile_fp8.kv_cache_size_bytes(1000) == profile_bf16.kv_cache_size_bytes(1000) / 2
+
+
+class TestNewGenerationProfiles:
+    """2026-era model profiles and their KV math."""
+
+    def test_llama4_scout_kv_per_token(self):
+        p = get_model_profile("llama-4-scout")
+        # 48 layers x 8 kv_heads x 128 head_dim x 2 (K+V) x 2 B = 192 KiB
+        assert p.total_kv_cache_bytes_per_token == 192 * 1024
+
+    def test_deepseek_v32_mla_kv_per_token(self):
+        p = get_model_profile("deepseek-v3.2")
+        # MLA single latent: 61 layers x 576 elements x 2 B = 70,272 B
+        assert p.total_kv_cache_bytes_per_token == 61 * 576 * 2
+
+    def test_qwen38_hybrid_kv_layers(self):
+        p = get_model_profile("qwen3.8-27b")
+        assert p.effective_kv_layers == 16
+        assert p.total_kv_cache_bytes_per_token == 64 * 1024
+
+
+class TestFutureGpuProfiles:
+    """Shipping + projected GPU profiles are registered and sane."""
+
+    def test_all_present(self):
+        from kvbench.core.gpu_profiles import GPU_PROFILES
+        for name in ("B200_SXM", "MI355X_OAM", "RUBIN_VR200", "RUBIN_ULTRA", "MI455X_HELIOS"):
+            assert name in GPU_PROFILES
+
+    def test_projected_marked(self):
+        from kvbench.core.gpu_profiles import GPU_PROFILES
+        for name in ("RUBIN_VR200", "RUBIN_ULTRA", "MI455X_HELIOS"):
+            assert "projected" in GPU_PROFILES[name].name.lower()
+
+    def test_monotonic_generations(self):
+        from kvbench.core.gpu_profiles import GPU_PROFILES
+        g = GPU_PROFILES
+        assert g["B200_SXM"].bf16_tflops <= g["B300_SXM"].bf16_tflops < g["RUBIN_VR200"].bf16_tflops < g["RUBIN_ULTRA"].bf16_tflops
+        assert g["MI355X_OAM"].hbm_bandwidth_tb_s < g["MI455X_HELIOS"].hbm_bandwidth_tb_s
