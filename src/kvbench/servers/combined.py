@@ -213,8 +213,14 @@ class CombinedServer:
             )
             await asyncio.sleep(prefill_latency / 1000)
 
-            # Store the new KV through the stack (skipping the cached prefix)
-            await self.kv.store(tokens, skip_leading=hit_tokens)
+            # Store new full chunks only, matching the classic
+            # LMCacheConnectorV1 path: the trailing partial chunk is never
+            # stored (save_unfull_chunk=False / discard_partial_chunks), and
+            # when the prompt is fully covered by the hit no store op is
+            # emitted at all (vllm_v1_adapter skip rule).
+            store_end = (num_tokens // self.chunk_size) * self.chunk_size
+            if store_end > hit_tokens:
+                await self.kv.store(tokens[:store_end], skip_leading=hit_tokens)
 
         cache_hits = hit_tokens // self.chunk_size
         cache_misses = (miss_tokens + self.chunk_size - 1) // self.chunk_size

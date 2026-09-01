@@ -57,6 +57,7 @@ class LMCacheStack(KVStack):
         trace_file: Path | str | None = None,
         random_fill: bool = True,
         random_pool_mb: int = 256,
+        tp_size: int = 1,
     ) -> None:
         self.instance_id = instance_id
         self.model_profile = model_profile
@@ -64,7 +65,15 @@ class LMCacheStack(KVStack):
         self.trace_file = trace_file
         self.random_fill = random_fill
         self.random_pool_mb = random_pool_mb
+        # Tensor parallelism: emulate one LMCache engine per TP rank, exactly
+        # as real vLLM runs one worker-side engine per rank. Each rank stores
+        # its own KV shard (kv_heads/tp heads, or 1 replicated head when
+        # tp > kv_heads — vLLM replicates KV heads in that regime), keyed
+        # with its worker_id, so a logical chunk becomes tp_size files.
+        self.tp_size = max(1, int(tp_size))
         self.stats = KVStackStats()
+        self._engines: list[Any] = []
+        self._connectors: list[Any] = []
         self._engine: Any = None
         self._connector: Any = None
         self._chunk_size: int | None = None
@@ -111,45 +120,67 @@ class LMCacheStack(KVStack):
         kv_dtype = dtype_map[profile.dtype]
         chunk_size = lmcache_config.chunk_size
 
-        metadata = LMCacheMetadata(
-            model_name=self.model_profile,
-            world_size=1,
-            local_world_size=1,
-            worker_id=0,
-            local_worker_id=0,
-            kv_dtype=kv_dtype,
-            kv_shape=(profile.layers, 2, chunk_size, profile.kv_heads, profile.head_dim),
-            chunk_size=chunk_size,
-        )
-        self._connector = MockGPUConnector(
-            num_layers=profile.layers,
-            hidden_dim=profile.kv_heads * profile.head_dim,
-            dtype=kv_dtype,
-            random_fill=self.random_fill,
-            random_pool_mb=self.random_pool_mb,
-        )
-        engine = LMCacheEngineBuilder.get_or_create(
-            self.instance_id,
-            lmcache_config,
-            metadata,
-            self._connector,
-            broadcast_fn=lambda _tensor, _src: None,
-            broadcast_object_fn=lambda obj, _src: obj,
-        )
-        engine.post_init()
-        self._engine = engine
-        self._chunk_size = chunk_size
-        self._lmcache_config = lmcache_config
+        tp = self.tp_size
+        # vLLM shards KV heads across ranks; when tp > kv_heads each rank
+        # holds one replicated head (total stored bytes exceed logical KV).
+        heads_per_rank = max(1, profile.kv_heads // tp)
+        kv_layers = profile.effective_kv_layers
 
         if self.trace_file is not None:
-            from kvbench.trace.recorder import TraceRecorder, install_lmcache_trace
+            from kvbench.trace.recorder import TraceRecorder
 
             self._trace_recorder = TraceRecorder(self.trace_file)
-            wrapped = install_lmcache_trace(engine, self._trace_recorder)
-            logger.info(f"KV trace enabled -> {self.trace_file} (backends: {wrapped})")
+
+        for rank in range(tp):
+            metadata = LMCacheMetadata(
+                model_name=self.model_profile,
+                world_size=tp,
+                local_world_size=tp,
+                worker_id=rank,
+                local_worker_id=rank,
+                kv_dtype=kv_dtype,
+                kv_shape=(kv_layers, 2, chunk_size, heads_per_rank, profile.head_dim),
+                chunk_size=chunk_size,
+            )
+            connector = MockGPUConnector(
+                num_layers=kv_layers,
+                hidden_dim=heads_per_rank * profile.head_dim,
+                dtype=kv_dtype,
+                random_fill=self.random_fill,
+                random_pool_mb=self.random_pool_mb,
+            )
+            rank_instance = (
+                self.instance_id if tp == 1 else f"{self.instance_id}-r{rank}"
+            )
+            engine = LMCacheEngineBuilder.get_or_create(
+                rank_instance,
+                lmcache_config,
+                metadata,
+                connector,
+                broadcast_fn=lambda _tensor, _src: None,
+                broadcast_object_fn=lambda obj, _src: obj,
+            )
+            engine.post_init()
+            self._engines.append(engine)
+            self._connectors.append(connector)
+
+            if self._trace_recorder is not None:
+                from kvbench.trace.recorder import install_lmcache_trace
+
+                wrapped = install_lmcache_trace(engine, self._trace_recorder)
+                logger.info(
+                    f"KV trace enabled for rank {rank} -> {self.trace_file} "
+                    f"(backends: {wrapped})"
+                )
+
+        self._engine = self._engines[0]
+        self._connector = self._connectors[0]
+        self._chunk_size = chunk_size
+        self._lmcache_config = lmcache_config
         logger.info(
-            f"LMCache engine started (instance={self.instance_id}, "
+            f"LMCache engine(s) started (instance={self.instance_id}, tp={tp}, "
             f"model={self.model_profile}, chunk_size={chunk_size}, "
+            f"heads_per_rank={heads_per_rank}, kv_layers={kv_layers}, "
             f"local_cpu={lmcache_config.local_cpu}, "
             f"local_disk={lmcache_config.local_disk}, "
             f"remote={lmcache_config.remote_url})"
@@ -173,29 +204,46 @@ class LMCacheStack(KVStack):
         return int(hit)
 
     async def store(self, tokens: list[int], skip_leading: int = 0) -> None:
-        engine = self._require_engine()
+        self._require_engine()
         try:
-            await asyncio.to_thread(self._store_sync, engine, tokens, skip_leading)
+            # All TP ranks store their shard concurrently, as real vLLM
+            # workers do.
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        self._store_sync, engine, connector, tokens, skip_leading
+                    )
+                    for engine, connector in zip(self._engines, self._connectors)
+                )
+            )
         except Exception:
             self.stats.errors += 1
             raise
         self.stats.stores += 1
         self.stats.stored_tokens += len(tokens) - skip_leading
 
-    def _store_sync(self, engine: Any, tokens: list[int], skip_leading: int) -> None:
+    def _store_sync(
+        self, engine: Any, connector: Any, tokens: list[int], skip_leading: int
+    ) -> None:
         import torch
 
         mask = None
         if skip_leading > 0:
             mask = torch.ones(len(tokens), dtype=torch.bool)
             mask[:skip_leading] = False
-        kv_source = self._connector.new_kv_tensor(len(tokens))
+        kv_source = connector.new_kv_tensor(len(tokens))
         engine.store(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_source=kv_source)
 
     async def retrieve(self, tokens: list[int]) -> int:
-        engine = self._require_engine()
+        self._require_engine()
         try:
-            retrieved = await asyncio.to_thread(self._retrieve_sync, engine, tokens)
+            results = await asyncio.gather(
+                *(
+                    asyncio.to_thread(self._retrieve_sync, engine, connector, tokens)
+                    for engine, connector in zip(self._engines, self._connectors)
+                )
+            )
+            retrieved = results[0] if results else 0
         except Exception:
             self.stats.errors += 1
             raise
@@ -203,10 +251,10 @@ class LMCacheStack(KVStack):
         self.stats.retrieved_tokens += retrieved
         return retrieved
 
-    def _retrieve_sync(self, engine: Any, tokens: list[int]) -> int:
+    def _retrieve_sync(self, engine: Any, connector: Any, tokens: list[int]) -> int:
         import torch
 
-        kv_dest = self._connector.new_kv_tensor(len(tokens))
+        kv_dest = connector.new_kv_tensor(len(tokens))
         ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), kv_dest=kv_dest)
         return int(ret_mask.sum())
 
@@ -228,10 +276,24 @@ class LMCacheStack(KVStack):
         local_disk_bytes = (
             int(cfg.max_local_disk_size * gb) if getattr(cfg, "local_disk", None) else 0
         )
+        # Stored bytes may exceed logical KV when tp > kv_heads (vLLM
+        # replicates KV heads across ranks in that regime).
+        heads_per_rank = max(1, profile.kv_heads // self.tp_size)
+        stored_bytes_per_token = (
+            2
+            * profile.effective_kv_layers
+            * heads_per_rank
+            * profile.head_dim
+            * profile.bytes_per_element
+            * self.tp_size
+        )
         return {
             "chunk_size": self.chunk_size,
             "bytes_per_token": bytes_per_token,
             "chunk_bytes": bytes_per_token * self.chunk_size,
+            "tp_size": self.tp_size,
+            "stored_bytes_per_token": stored_bytes_per_token,
+            "files_per_chunk": self.tp_size,
             "vocab_size": profile.vocab_size,
             "local_cpu_enabled": bool(cfg.local_cpu),
             "local_cpu_capacity_bytes": local_cpu_bytes,

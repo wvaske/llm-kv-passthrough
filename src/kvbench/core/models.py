@@ -46,6 +46,13 @@ class ModelProfile:
     vocab_size: int = 128256  # Common Llama 3 vocab size
     max_seq_len: int = 131072  # 128k context
     dtype: Literal["fp16", "bf16", "fp8"] = "bf16"
+    # Hybrid-attention models (e.g. Qwen3.8): only some layers keep
+    # per-token KV cache; the rest use constant-size linear-attention state.
+    # None = all layers are full attention.
+    kv_layers: int | None = None
+    # Explicit per-head dimension for models where head_dim != hidden/num_heads
+    # (e.g. Qwen3.8-27B: hidden 5120, 24 heads, head_dim 256). None = derive.
+    head_dim_override: int | None = None
 
     def __post_init__(self) -> None:
         """Set num_heads if not specified."""
@@ -55,10 +62,17 @@ class ModelProfile:
 
     @property
     def head_dim(self) -> int:
-        """Compute dimension per attention head."""
+        """Dimension per attention head (explicit override or hidden/num_heads)."""
+        if self.head_dim_override is not None:
+            return self.head_dim_override
         if self.num_heads is None:
             return 128  # Default head dimension
         return self.hidden // self.num_heads
+
+    @property
+    def effective_kv_layers(self) -> int:
+        """Layers that accrue per-token KV cache (all layers unless hybrid)."""
+        return self.kv_layers if self.kv_layers is not None else self.layers
 
     @property
     def kv_head_dim(self) -> int:
@@ -92,7 +106,7 @@ class ModelProfile:
         Returns:
             Total bytes per token across all layers.
         """
-        return self.kv_cache_bytes_per_token * self.layers
+        return self.kv_cache_bytes_per_token * self.effective_kv_layers
 
     def kv_cache_size_bytes(self, num_tokens: int) -> int:
         """Calculate total KV cache size for a given number of tokens.
@@ -213,6 +227,22 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         intermediate=8192,
         vocab_size=128256,
         max_seq_len=131072,
+    ),
+    # Qwen 3.8 family
+    "qwen3.8-27b": ModelProfile(
+        name="Qwen3.8 27B",
+        layers=64,               # total transformer layers (compute/roofline)
+        kv_layers=16,            # only the full-attention layers hold per-token KV
+        hidden=5120,
+        kv_heads=4,
+        num_heads=24,
+        head_dim_override=256,   # config.json head_dim (not hidden/num_heads)
+        intermediate=17408,
+        vocab_size=248320,
+        max_seq_len=262144,
+        # Note: the 48 linear-attention layers keep ~72 MiB of constant
+        # per-sequence state that never enters the paged KV cache and is
+        # therefore not part of the LMCache storage workload.
     ),
     # Qwen 2.5 family
     "qwen-2.5-7b": ModelProfile(

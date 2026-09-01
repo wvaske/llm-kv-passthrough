@@ -40,7 +40,7 @@ class ChatMessage(BaseModel):
     """
 
     role: MessageRole
-    content: str | None = None
+    content: str | list[Any] | None = None
     name: str | None = None
     function_call: dict[str, Any] | None = None
     tool_calls: list[dict[str, Any]] | None = None
@@ -93,11 +93,21 @@ class ChatCompletionRequest(BaseModel):
 
     @property
     def prompt_text(self) -> str:
-        """Extract the full prompt text from messages."""
+        """Extract the full prompt text from messages.
+
+        Tolerates OpenAI content-parts lists (``[{"type": "text",
+        "text": ...}, ...]``) by concatenating their text segments.
+        """
         parts = []
         for msg in self.messages:
-            if msg.content:
-                parts.append(f"{msg.role.value}: {msg.content}")
+            content = msg.content
+            if isinstance(content, list):
+                content = "".join(
+                    seg.get("text", "") if isinstance(seg, dict) else str(seg)
+                    for seg in content
+                )
+            if content:
+                parts.append(f"{msg.role.value}: {content}")
         return "\n".join(parts)
 
     @property

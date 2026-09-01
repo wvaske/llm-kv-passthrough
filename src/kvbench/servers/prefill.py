@@ -175,8 +175,11 @@ class PrefillServer:
             )
             await asyncio.sleep(prefill_latency / 1000)
 
-            # Store the new KV through the stack (skipping the cached prefix)
-            await self.kv.store(tokens, skip_leading=hit_tokens)
+            # Store new full chunks only (classic-path parity: no partial
+            # trailing chunk, no store op when fully hit)
+            store_end = (num_tokens // self.chunk_size) * self.chunk_size
+            if store_end > hit_tokens:
+                await self.kv.store(tokens[:store_end], skip_leading=hit_tokens)
 
         cache_hits = hit_tokens // self.chunk_size
         cache_misses = (miss_tokens + self.chunk_size - 1) // self.chunk_size

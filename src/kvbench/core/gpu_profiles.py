@@ -78,6 +78,14 @@ class GPUProfile:
 # cross-GPU comparisons are consistent; NVIDIA marketing numbers for
 # Hopper/Ada are typically the 2:4 structured-sparsity figures (2x dense).
 GPU_PROFILES: dict[str, GPUProfile] = {
+    "B300_SXM": GPUProfile(
+        name="NVIDIA B300 SXM (Blackwell Ultra)",
+        bf16_tflops=2250.0,          # dense BF16 (HGX B300: 36 PF sparse / 8 GPUs / 2)
+        hbm_bandwidth_tb_s=8.0,      # HBM3e
+        hbm_capacity_gb=288,
+        nvlink_bandwidth_gb_s=1800.0,  # NVLink 5
+        tdp_watts=1400,
+    ),
     "H100_SXM": GPUProfile(
         name="NVIDIA H100 SXM",
         bf16_tflops=989.5,

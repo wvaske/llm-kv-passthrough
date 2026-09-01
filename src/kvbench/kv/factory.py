@@ -55,6 +55,7 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             trace_file=config.kv.trace_file,
             random_fill=config.kv.random_fill,
             random_pool_mb=config.kv.random_pool_mb,
+            tp_size=config.gpu.tp_size,
         )
 
     if stack == "kvbm":
