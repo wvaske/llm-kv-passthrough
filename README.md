@@ -237,8 +237,8 @@ exactly as it does in a real vLLM + LMCache deployment.
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/kvbench.git
-cd kvbench
+git clone https://github.com/wvaske/llm-kv-passthrough.git
+cd llm-kv-passthrough
 
 # Install development dependencies
 pip install -e ".[dev]"
@@ -281,7 +281,7 @@ kvbench/
 
 ## Documentation
 
-Full documentation available at https://your-org.github.io/kvbench/
+Full documentation available at https://github.com/wvaske/llm-kv-passthrough (docs/)
 
 Build locally:
 
@@ -311,4 +311,4 @@ genai-perf \
 
 ## License
 
-MIT License
+BSD 3-Clause License — see [LICENSE](LICENSE).

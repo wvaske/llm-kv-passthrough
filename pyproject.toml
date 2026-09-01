@@ -7,7 +7,7 @@ name = "kvbench"
 version = "1.0.0"
 description = "Distributed mock LLM serving system for benchmarking KV cache management without GPUs"
 readme = "README.md"
-license = "MIT"
+license = "BSD-3-Clause"
 requires-python = ">=3.10"
 authors = [
     { name = "KV-Bench Team" }
@@ -16,7 +16,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -43,7 +43,7 @@ dependencies = [
 # The KV management stack. Required to run servers; optional so tooling and
 # unit tests install without torch. Runs CPU-only — no GPU required.
 lmcache = [
-    "lmcache>=0.5.0",
+    "lmcache~=0.5.1",
 ]
 dev = [
     "pytest>=8.0.0",
