@@ -93,7 +93,72 @@ class MockGPUConnector(GPUConnectorInterface):
                 remaining -= length
         return tensor
 
+    # -- shared "GPU" buffers ---------------------------------------------
+    # A real engine has a fixed KV pool in GPU memory; it does not allocate
+    # and fill a prompt-sized tensor per request. Allocating + random-filling
+    # a 2-3.5 GB tensor for every retrieve (whose contents LMCache then
+    # overwrites) and every store (of which only the new suffix is read)
+    # cost the emulator 0.2-1 s of CPU per 100k-token turn that the real
+    # stack does not spend. These views reuse two buffers instead:
+    #   source_view: random bytes, viewed at a random token offset per call so
+    #     chunks stored by different requests at the same position differ
+    #     (no cross-request dedup);
+    #   dest_view: scratch (contents irrelevant; concurrent writers race
+    #     harmlessly, as they would into disjoint GPU blocks).
+    MAX_SHARED_BYTES = 12 << 30
+
+    def _token_bytes(self) -> int:
+        return 2 * self.num_layers * self.hidden_dim * torch.empty((), dtype=self.dtype).element_size()
+
+    def _shared(self, name: str, tokens: int, fill: bool) -> torch.Tensor | None:
+        lock = self.__dict__.setdefault("_shared_lock", threading.Lock())
+        with lock:
+            buf = self.__dict__.get(name)
+            if buf is not None and buf.shape[2] >= tokens:
+                return buf
+            want = max(tokens, 2 * (buf.shape[2] if buf is not None else 0), 32768)
+            if want * self._token_bytes() > self.MAX_SHARED_BYTES:
+                want = tokens
+                if want * self._token_bytes() > self.MAX_SHARED_BYTES:
+                    return None
+            buf = self.new_kv_tensor(want) if fill else torch.empty(
+                (2, self.num_layers, want, self.hidden_dim), dtype=self.dtype
+            )
+            self.__dict__[name] = buf
+            return buf
+
+    def source_view(self, num_tokens: int) -> torch.Tensor:
+        """KV source for a store: a random-offset view of a shared random buffer."""
+        buf = self._shared("_src_buf", 2 * num_tokens, fill=True)
+        if buf is None:
+            return self.new_kv_tensor(num_tokens)
+        span = buf.shape[2] - num_tokens
+        if self._pool is not None and span > 0:
+            with self._offset_lock:
+                off = int(torch.randint(0, span + 1, (1,), generator=self._offset_gen))
+        else:
+            off = 0
+        return buf[:, :, off : off + num_tokens, :]
+
+    def dest_view(self, num_tokens: int) -> torch.Tensor:
+        """KV destination for a retrieve: a view of a shared scratch buffer."""
+        buf = self._shared("_dst_buf", num_tokens, fill=False)
+        if buf is None:
+            return torch.empty((2, self.num_layers, num_tokens, self.hidden_dim), dtype=self.dtype)
+        return buf[:, :, :num_tokens, :]
+
+    # Retrieve-side copy into the stand-in GPU tensor. Off by default: the
+    # bytes are never used, the serving engine's load time is modelled by the
+    # batching engine (kv_load_gb_s), and a CPU memcpy of a 2-3 GB prefix
+    # (~0.2 s) held LMCache's CPU-tier objects pinned ~7x longer than the
+    # real GB10's unified-memory copy (~30 ms), which changed which chunks the
+    # 8 GB tier could evict. LMCache still reads every chunk from its tier
+    # (disk reads included) before handing it to the connector.
+    copy_on_retrieve: bool = False
+
     def to_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs) -> None:
+        if not self.copy_on_retrieve:
+            return
         kv_dest: torch.Tensor = kwargs["kv_dest"]
         kv_dest[:, :, start:end, :] = memory_obj.tensor
 

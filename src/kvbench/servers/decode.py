@@ -269,7 +269,7 @@ class DecodeServer:
             SSE-formatted chunks.
         """
         self.stats.requests_total += 1
-        max_tokens = request.max_tokens or 100
+        max_tokens = request.effective_max_tokens
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         start_time = time.time()
 
@@ -337,7 +337,7 @@ class DecodeServer:
         start_time = time.time()
 
         try:
-            max_tokens = request.max_tokens or 100
+            max_tokens = request.effective_max_tokens
 
             # Load the prompt's KV chunks from the cache (decode read path);
             # prefer the tokenized prompt length as the context length

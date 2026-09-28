@@ -1,0 +1,33 @@
+# Timing anchors: NVIDIA B300 SXM / Blackwell Ultra (InferenceX, 2026-09-27).
+- model: deepseek-v3.2
+  gpu: B300_SXM
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 7.8       # 128 tok/s/user, 992 tok/s/chip (B300 vs H200 page)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b300-vs-h200"
+- model: deepseek-v3.2
+  gpu: B300_SXM
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 11.2      # 89 tok/s/user, 2298 tok/s/chip
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b300-vs-h200"
+- model: deepseek-v3.2
+  gpu: B300_SXM
+  tp_size: 8
+  isl: 65536
+  osl: 512
+  tpot_ms: 6.9       # AgentX, DeepSeek V4 Pro 1.6T at 145 tok/s/user, 5530 tok/s/chip
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-v4-b200-vs-b300"
+- model: qwen3.8-27b
+  gpu: B300_SXM
+  tp_size: 8
+  isl: 65536
+  osl: 512
+  tpot_ms: 14.1      # AgentX, Qwen 3.8 Flash Next 176B-A6B at 71 tok/s/user (nearest published Qwen 3.8 point)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/qwen-3-8-flash-next-b300-vs-h100"

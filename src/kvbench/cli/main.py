@@ -76,6 +76,32 @@ def serve(
         "--anchors",
         help="YAML/JSON file or directory of extra timing anchors (measured TTFT/TPOT)",
     ),
+    full_speed: bool | None = typer.Option(
+        None,
+        "--full-speed",
+        help="Skip the emulated GPU sleeps (serve as fast as the KV stack allows) "
+        "and report effective TTFT / tokens per second for the emulated model on /metrics",
+    ),
+    hot_kv_gb: float | None = typer.Option(
+        None,
+        "--hot-kv-gb",
+        help="Host-resident hot set of KV chunks in GB (default: the LMCache local CPU "
+        "tier size; 0 disables it)",
+    ),
+    gpu_batching: bool | None = typer.Option(
+        None,
+        "--gpu-batching/--no-gpu-batching",
+        help="Model continuous batching: one engine step loop over all in-flight requests "
+        "(shared decode steps, chunked prefill) instead of per-request timing",
+    ),
+    eff_bw: float | None = typer.Option(None, "--eff-bw", help="Batching engine memory-bandwidth efficiency (default 0.90)"),
+    eff_flops: float | None = typer.Option(None, "--eff-flops", help="Batching engine compute efficiency (default 0.45)"),
+    token_budget: int | None = typer.Option(None, "--token-budget", help="Batching engine tokens per step (vLLM max_num_batched_tokens, default 8192)"),
+    frontend_us_per_token: float | None = typer.Option(None, "--frontend-us-per-token", help="Front-end time per prompt token before the engine, us (default 1.0)"),
+    kv_load_gb_s: float | None = typer.Option(None, "--kv-load-gbs", help="In-step cached-prefix load rate, GB/s (default 12; 0 disables)"),
+    chars_per_token: float | None = typer.Option(None, "--chars-per-token", help="Characters per simulated prompt token (default 4.0; fractional OK)"),
+    step_overhead_ms: float | None = typer.Option(None, "--step-overhead-ms", help="Fixed time added to every batching-engine step, ms (default 0)"),
+    weight_bytes_per_param: float | None = typer.Option(None, "--weight-bytes-per-param", help="Weight bytes per parameter read per step (default: model dtype)"),
     prefill_ms_per_token: float | None = typer.Option(
         None,
         "--prefill-ms-per-token",
@@ -136,6 +162,17 @@ def serve(
             "simple_mode": simple_timing,
             "calibrated": calibrated_timing,
             "anchors_file": anchors_file,
+            "full_speed": full_speed,
+            "hot_kv_gb": hot_kv_gb,
+            "batching": gpu_batching,
+            "batching_eff_bw": eff_bw,
+            "batching_eff_flops": eff_flops,
+            "batching_token_budget": token_budget,
+            "frontend_us_per_token": frontend_us_per_token,
+            "kv_load_gb_s": kv_load_gb_s,
+            "batching_weight_bytes_per_param": weight_bytes_per_param,
+            "batching_overhead_ms": step_overhead_ms,
+            "chars_per_token": chars_per_token,
             "prefill_ms_per_token": prefill_ms_per_token,
             "decode_ms_per_token": decode_ms_per_token,
             "pp_size": pp_size,
@@ -168,6 +205,8 @@ def serve(
     )
     console.print(f"  Model: {cfg.server.model_profile}")
     console.print(f"  GPU: {cfg.gpu.gpu_profile}")
+    if cfg.timing.full_speed:
+        console.print("  Timing: FULL SPEED (no GPU sleeps; effective TTFT/tok/s on /metrics)")
     if cfg.timing.simple_mode:
         console.print(
             f"  Timing: simple ({cfg.timing.prefill_ms_per_token} ms/token prefill, "

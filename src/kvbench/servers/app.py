@@ -134,6 +134,13 @@ class KVBenchApp:
                 raise HTTPException(status_code=503, detail="Server not initialized")
             return await self._server.get_metrics()
 
+        @self.app.get("/kvbench/effective")
+        async def get_effective_metrics() -> MetricsResponse:
+            """Server counters plus the emulated-hardware effectiveness figures
+            (effective TTFT and tokens/s for the emulated model and GPU), as JSON
+            regardless of whether Prometheus exposition is enabled on /metrics."""
+            return await self._server.get_metrics()
+
         @self.app.get("/kvbench/state")
         async def get_kv_state() -> JSONResponse:
             """KV stack capacity, live tier usage, and operation stats."""

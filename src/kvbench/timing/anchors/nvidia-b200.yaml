@@ -1,7 +1,40 @@
-# Timing anchors: NVIDIA B200 SXM.
-
+# Timing anchors: NVIDIA B200 SXM (InferenceX operating points, 2026-09-27).
 - model: gpt-oss-120b
   gpu: B200_SXM
   isl: 1024
   osl: 1024
-  tpot_ms: 1.0
+  tpot_ms: 1.0       # 1000 tok/s/user headline (TensorRT-LLM, FP4)
+  source: published
+  citation: "https://blogs.nvidia.com/blog/blackwell-inferencemax-benchmark-results/"
+- model: deepseek-v3.2
+  gpu: B200_SXM
+  tp_size: 8
+  isl: 8192
+  osl: 1024
+  tpot_ms: 7.8       # 128 tok/s/user, 1051 tok/s/chip (8k/1k FP8)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b200-vs-h200"
+- model: deepseek-v3.2
+  gpu: B200_SXM
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 14.1      # 71 tok/s/user, 1020 tok/s/GPU (1k/1k)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b200-vs-h100"
+- model: llama-3.1-70b
+  gpu: B200_SXM
+  tp_size: 2
+  isl: 8192
+  osl: 1024
+  tpot_ms: 9.26      # 108 tok/s/user, 2352 tok/s/chip (Llama 3.3 70B, 8k/1k)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/llama-3-3-70b-b200-vs-h200"
+- model: deepseek-v3.2
+  gpu: B200_SXM
+  tp_size: 8
+  isl: 65536
+  osl: 512
+  tpot_ms: 6.9       # AgentX, DeepSeek V4 Pro 1.6T at 145 tok/s/user, 3373 tok/s/chip (V4 stands in for the V3.2 profile)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-v4-b200-vs-b300"

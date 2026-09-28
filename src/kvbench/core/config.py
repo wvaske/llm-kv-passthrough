@@ -183,6 +183,44 @@ class TimingConfig(BaseModel):
         description="YAML/JSON file (or directory of files) of additional timing anchors "
         "(measured TTFT/TPOT points) merged with the built-ins",
     )
+    full_speed: bool = Field(
+        default=False,
+        description="Do not sleep for emulated GPU time: serve every request as fast "
+        "as the KV stack allows, while still computing the emulated latency so the "
+        "server can report effective TTFT and tokens/s for the emulated model and GPU",
+    )
+    hot_kv_gb: float | None = Field(
+        default=None,
+        description="Hot set of KV chunks (GB) a returning session does not re-read through "
+        "the KV stack, modelling the serving engine's own prefix cache (vLLM "
+        "enable_prefix_caching). None or 0 = disabled, matching a serving stack with "
+        "prefix caching off, where every turn retrieves its whole cached prefix",
+    )
+    batching: bool = Field(
+        default=False,
+        description="Model the serving engine's continuous batching: one step loop over all "
+        "in-flight requests (decodes share each step; prefills are chunked into the "
+        "remaining token budget), instead of pricing each request as if alone on the GPU",
+    )
+    batching_eff_bw: float = Field(default=0.90, gt=0, le=1.0, description="Memory-bandwidth efficiency of the step roofline")
+    batching_eff_flops: float = Field(default=0.45, gt=0, le=1.0, description="Compute efficiency of the step roofline")
+    batching_overhead_ms: float = Field(default=0.0, ge=0, description="Fixed time added to every engine step (ms)")
+    batching_token_budget: int = Field(default=8192, ge=16, description="Tokens per step (vLLM max_num_batched_tokens)")
+    batching_max_num_seqs: int = Field(default=256, ge=1, description="Max sequences per step (vLLM max_num_seqs)")
+    batching_weight_bytes_per_param: float | None = Field(
+        default=None, description="Weight bytes per parameter read each step (None = the model dtype; e.g. ~0.55 for MXFP4)"
+    )
+    frontend_us_per_token: float = Field(
+        default=1.0, ge=0, description="Serving front-end time per prompt token (templating, tokenization, KV lookup) "
+        "before a request reaches the engine, in microseconds; the emulator's own pre-engine work counts against it"
+    )
+    chars_per_token: float = Field(
+        default=4.0, gt=1.0, le=8.0, description="Characters per simulated prompt token; fractional values supported "
+        "(3.84 matches the Llama 3 tokenizer on the AgentX traces)"
+    )
+    kv_load_gb_s: float | None = Field(
+        default=12.0, description="In-step load rate of the cached prefix into the engine (GB/s); None disables"
+    )
 
 
 class ServerConfig(BaseModel):

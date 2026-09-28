@@ -8,3 +8,28 @@
   osl: 64
   ttft_ms: 79.6
   tpot_ms: 12.5
+
+# AgentX (replayed Claude Code sessions) on the real GB10, capture
+# gb10-real-agentx-llama1b-20m-cpu8g, 2026-09-27: vLLM 0.27.1 + LMCache
+# 0.5.4, concurrency 4. Mean prompt 79,748 tokens of which 73,564 were
+# cached (LMCache lookup hits), so TTFT covers ~6.2k new tokens attending to
+# a 73.5k prefix; mean output 371 tokens; ITL 72.5 ms.
+- model: llama-3.2-1b
+  gpu: GB10
+  isl: 79748
+  cached_tokens: 73564
+  osl: 371
+  ttft_ms: 811.2   # fitted: 1274 ms mean TTFT x 0.637 so the emulated matched-turn mean reproduces the real capture
+  tpot_ms: 52.2    # fitted: whole-run token-weighted ITL 53.3 ms (sum(latency-TTFT)/sum(OSL)) x 0.98 (emulated/anchor ratio observed); the first 43 turns alone give 31 ms, later turns cost more per token
+  source: experiment
+  citation: "aibench-lab results 9b7d23b0 (aiperf profile_export), 2026-09-27"
+
+- model: gpt-oss-20b
+  gpu: GB10
+  isl: 76986
+  cached_tokens: 75841
+  osl: 373
+  ttft_ms: 10291.3   # real mean TTFT 16162 ms x 0.637 (same shape correction as the Llama pair)
+  tpot_ms: 29.4    # whole-run token-weighted ITL 30.0 ms x 0.98; TTFT includes the hidden reasoning phase, which is what the storage sees as turn time
+  source: experiment
+  citation: "aibench-lab results fe575eff (aiperf profile_export), 2026-09-27; gb10-real-agentx-gptoss20b-20m-cpu8g"

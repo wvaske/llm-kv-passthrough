@@ -1,0 +1,25 @@
+# Timing anchors: NVIDIA H200 SXM (InferenceX operating points, 2026-09-27).
+- model: deepseek-v3.2
+  gpu: H200_SXM
+  tp_size: 8
+  isl: 8192
+  osl: 1024
+  tpot_ms: 7.8       # 128 tok/s/user, 625 tok/s/chip (B200 vs H200, 8k/1k FP8)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b200-vs-h200"
+- model: deepseek-v3.2
+  gpu: H200_SXM
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 11.2      # 89 tok/s/user, 569 tok/s/chip (B300 vs H200 page)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b300-vs-h200"
+- model: llama-3.1-70b
+  gpu: H200_SXM
+  tp_size: 2
+  isl: 8192
+  osl: 1024
+  tpot_ms: 9.26      # 108 tok/s/user, 1152 tok/s/chip (B200 vs H200 Llama 3.3 70B, 8k/1k)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/llama-3-3-70b-b200-vs-h200"

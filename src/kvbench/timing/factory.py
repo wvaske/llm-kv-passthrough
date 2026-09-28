@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from kvbench.timing.calibration import CalibratedTimingStrategy
+from kvbench.timing.fullspeed import FullSpeedTimingStrategy
 from kvbench.timing.roofline import RooflineTimingStrategy
 from kvbench.timing.simple import SimpleTimingStrategy
 from kvbench.timing.strategy import TimingStrategy
@@ -32,6 +33,14 @@ def create_timing_strategy(config: KVBenchConfig) -> TimingStrategy:
         SimpleTimingStrategy when timing.simple_mode is set, otherwise a
         RooflineTimingStrategy with TP/PP communication configured.
     """
+    timing = config.timing
+    strategy = _create_base_strategy(config)
+    if timing.full_speed:
+        return FullSpeedTimingStrategy(strategy)
+    return strategy
+
+
+def _create_base_strategy(config: KVBenchConfig) -> TimingStrategy:
     timing = config.timing
 
     if timing.calibrated:

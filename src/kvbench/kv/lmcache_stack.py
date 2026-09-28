@@ -203,6 +203,41 @@ class LMCacheStack(KVStack):
         self.stats.hit_tokens += hit
         return int(hit)
 
+    async def lookup_pinned(self, tokens: list[int], lookup_id: str) -> int:
+        """Mirror vLLM's LMCache lookup server: every TP rank's engine runs
+        ``lookup(pin=True)``, which pins the hit chunks and ends in
+        ``touch_cache()`` -- the LRU refresh that keeps a returning session's
+        prefix resident. The hit is the minimum across ranks. Without it the
+        prefix kept its store-time recency and the 8 GB CPU tier evicted it
+        whole (emulated re-reads of 100 % of a prefix vs a median 55 % on the
+        real GB10)."""
+        self._require_engine()
+        try:
+            hits = await asyncio.gather(
+                *(
+                    asyncio.to_thread(engine.lookup, tokens, lookup_id=lookup_id, pin=True)
+                    for engine in self._engines
+                )
+            )
+        except Exception:
+            self.stats.errors += 1
+            raise
+        hit = int(min(hits)) if hits else 0
+        self.stats.lookups += 1
+        self.stats.lookup_tokens += len(tokens)
+        self.stats.hit_tokens += hit
+        return hit
+
+    async def unpin(self, lookup_id: str) -> None:
+        """Release a lookup's pins on every rank (vLLM does this in
+        wait_for_save, after the step that loaded the request)."""
+        if not self._engines:
+            return
+        await asyncio.gather(
+            *(asyncio.to_thread(engine.lookup_unpin, lookup_id) for engine in self._engines),
+            return_exceptions=True,
+        )
+
     async def store(self, tokens: list[int], skip_leading: int = 0) -> None:
         self._require_engine()
         try:
@@ -231,15 +266,15 @@ class LMCacheStack(KVStack):
         if skip_leading > 0:
             mask = torch.ones(len(tokens), dtype=torch.bool)
             mask[:skip_leading] = False
-        kv_source = connector.new_kv_tensor(len(tokens))
+        kv_source = connector.source_view(len(tokens)) if hasattr(connector, "source_view") else connector.new_kv_tensor(len(tokens))
         engine.store(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_source=kv_source)
 
-    async def retrieve(self, tokens: list[int]) -> int:
+    async def retrieve(self, tokens: list[int], skip_leading: int = 0) -> int:
         self._require_engine()
         try:
             results = await asyncio.gather(
                 *(
-                    asyncio.to_thread(self._retrieve_sync, engine, connector, tokens)
+                    asyncio.to_thread(self._retrieve_sync, engine, connector, tokens, skip_leading)
                     for engine, connector in zip(self._engines, self._connectors)
                 )
             )
@@ -251,11 +286,20 @@ class LMCacheStack(KVStack):
         self.stats.retrieved_tokens += retrieved
         return retrieved
 
-    def _retrieve_sync(self, engine: Any, connector: Any, tokens: list[int]) -> int:
+    def _retrieve_sync(
+        self, engine: Any, connector: Any, tokens: list[int], skip_leading: int = 0
+    ) -> int:
         import torch
 
-        kv_dest = connector.new_kv_tensor(len(tokens))
-        ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), kv_dest=kv_dest)
+        mask = None
+        if skip_leading > 0:
+            # Leading tokens are host-resident (HotKVSet): only the rest is
+            # read through the stack, as the real connector does for tokens
+            # its serving engine already holds.
+            mask = torch.ones(len(tokens), dtype=torch.bool)
+            mask[:skip_leading] = False
+        kv_dest = connector.dest_view(len(tokens)) if hasattr(connector, "dest_view") else connector.new_kv_tensor(len(tokens))
+        ret_mask = engine.retrieve(torch.tensor(tokens, dtype=torch.int64), mask=mask, kv_dest=kv_dest)
         return int(ret_mask.sum())
 
     def capacity_info(self) -> dict[str, Any]:

@@ -78,6 +78,17 @@ class KVStack(abc.ABC):
             as determined by the stack).
         """
 
+    async def lookup_pinned(self, tokens: list[int], lookup_id: str) -> int:
+        """Look up the cached prefix the way a serving engine's connector does
+        before scheduling a request: pin the hit chunks until ``unpin`` and
+        let the stack refresh their recency. Stacks without pinning fall back
+        to ``lookup``."""
+        return await self.lookup(tokens)
+
+    async def unpin(self, lookup_id: str) -> None:
+        """Release the pins taken by ``lookup_pinned`` (no-op by default)."""
+        return None
+
     @abc.abstractmethod
     async def store(self, tokens: list[int], skip_leading: int = 0) -> None:
         """Store KV cache for a token sequence.
@@ -89,7 +100,7 @@ class KVStack(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def retrieve(self, tokens: list[int]) -> int:
+    async def retrieve(self, tokens: list[int], skip_leading: int = 0) -> int:
         """Read cached KV data for a token sequence (the read path).
 
         Args:

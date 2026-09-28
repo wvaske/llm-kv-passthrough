@@ -16,7 +16,46 @@ import hashlib
 from dataclasses import dataclass
 
 
+
+def _hash_granules(text_bytes: bytes, granule: int, vocab: int = 128256, extra_every: int = 0) -> list[int]:
+    """Vectorized per-granule token ids (content-based, prefix-stable).
+
+    Each token id depends only on its own ``granule`` bytes (and the length
+    of the final, possibly short, piece), so shared text prefixes give
+    shared token prefixes. ~1 ms for a 100k-token prompt versus ~150 ms for
+    a per-piece SHA-256 loop, which matters because it runs per request.
+    """
+    import numpy as np
+
+    n = len(text_bytes)
+    count = (n + granule - 1) // granule
+    buf = np.zeros(count * granule, dtype=np.uint8)
+    buf[:n] = np.frombuffer(text_bytes, dtype=np.uint8)
+    g = buf.reshape(count, granule).astype(np.uint64)
+    key = np.zeros(count, dtype=np.uint64)
+    for j in range(granule):
+        key |= g[:, j] << np.uint64(8 * j)
+    last = n - (count - 1) * granule
+    if last < granule:
+        key[-1] |= np.uint64(last) << np.uint64(56)
+    # splitmix64 finalizer (uint64 arithmetic wraps)
+    with np.errstate(over="ignore"):
+        z = key + np.uint64(0x9E3779B97F4A7C15)
+        z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        z = z ^ (z >> np.uint64(31))
+    ids = (z % np.uint64(vocab)).astype(np.int64)
+    if extra_every > 0 and count >= extra_every:
+        pos = np.arange(extra_every - 1, count, extra_every)
+        with np.errstate(over="ignore"):
+            x = (z[pos] ^ np.uint64(0xD6E8FEB86659FD93)) * np.uint64(0x9E3779B97F4A7C15)
+            x = x ^ (x >> np.uint64(29))
+        ids = np.insert(ids, pos + 1, (x % np.uint64(vocab)).astype(np.int64))
+    return ids.tolist()
+
+
 @dataclass
+
 class TokenChunk:
     """A chunk of tokens with metadata.
 
@@ -95,6 +134,15 @@ class TokenProcessor:
 
         granule = max(1, round(chars_per_token))
         text_bytes = text.encode("utf-8")
+
+        if granule <= 7:
+            # Fractional ratios (e.g. 3.84 chars/token for code-heavy agentic
+            # text under the Llama 3 tokenizer): add one extra token every
+            # ``every`` granules, keeping the stream content-based and
+            # prefix-stable.
+            extra = granule / chars_per_token - 1.0
+            every = round(1.0 / extra) if extra > 1e-6 else 0
+            return _hash_granules(text_bytes, granule, extra_every=every)
 
         tokens = []
         for i in range(0, len(text_bytes), granule):

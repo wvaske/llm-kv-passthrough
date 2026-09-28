@@ -67,7 +67,8 @@ class ChatCompletionRequest(BaseModel):
         n: Number of completions to generate.
         stream: Whether to stream partial results.
         stop: Stop sequences.
-        max_tokens: Maximum tokens to generate.
+        max_tokens: Maximum tokens to generate (legacy field).
+        max_completion_tokens: Maximum tokens to generate (current field).
         presence_penalty: Presence penalty (-2 to 2).
         frequency_penalty: Frequency penalty (-2 to 2).
         logit_bias: Token logit biases.
@@ -84,7 +85,13 @@ class ChatCompletionRequest(BaseModel):
     stream: bool | None = False
     stop: str | list[str] | None = None
     max_tokens: int | None = None
+    max_completion_tokens: int | None = None  # newer OpenAI chat field; aiperf sends this one
     presence_penalty: float | None = Field(default=0.0, ge=-2.0, le=2.0)
+
+    @property
+    def effective_max_tokens(self) -> int:
+        """Output-token budget: max_tokens, else max_completion_tokens, else 100."""
+        return self.max_tokens or self.max_completion_tokens or 100
     frequency_penalty: float | None = Field(default=0.0, ge=-2.0, le=2.0)
     logit_bias: dict[str, float] | None = None
     user: str | None = None
@@ -458,3 +465,13 @@ class MetricsResponse(BaseModel):
     cache_hits: int
     cache_misses: int
     avg_latency_ms: float
+    # Emulated-hardware effectiveness (see kvbench.timing.fullspeed)
+    timing_mode: str | None = None
+    emulated_model: str | None = None
+    emulated_gpu: str | None = None
+    effective_ttft_ms: float | None = None
+    effective_tokens_per_s: float | None = None
+    effective_decode_tokens_per_s: float | None = None
+    actual_tokens_per_s: float | None = None
+    emulated_prefill_ms: float | None = None
+    emulated_decode_ms: float | None = None

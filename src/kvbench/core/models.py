@@ -299,6 +299,23 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         # planning for full weights must use the total separately.
         params_billions_override=5.1,
     ),
+    "gpt-oss-20b": ModelProfile(
+        name="GPT-OSS 20B (MoE, 3.6B active)",
+        layers=24,
+        hidden=2880,
+        kv_heads=8,
+        num_heads=64,
+        head_dim_override=64,
+        intermediate=2880,
+        vocab_size=201088,
+        max_seq_len=131072,
+        dtype="bf16",  # KV cache is bf16 even though the weights are MXFP4
+        # 20.9B total / ~3.6B active per token. Half the layers use a 128-token
+        # sliding window, but the real gb10 capture (2026-09-27, vLLM 0.27.1
+        # + LMCache 0.5.4) stored 12 MiB per 256-token chunk = 48 KiB/token,
+        # i.e. full bf16 KV for all 24 layers: 2 x 8 x 64 x 2 B x 24.
+        params_billions_override=3.6,
+    ),
     "qwen-2.5-7b": ModelProfile(
         name="Qwen 2.5 7B",
         layers=28,

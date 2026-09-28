@@ -1,0 +1,35 @@
+# Timing anchors: NVIDIA Rubin R200 (VR200), ESTIMATED. No published
+# InferenceX points yet; each B300 anchor is scaled by the HBM bandwidth
+# ratio R200/B300 = 20 TB/s / 8 TB/s = 2.5x (decode is bandwidth-bound).
+- model: deepseek-v3.2
+  gpu: R200
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 3.12      # 7.8 ms / 2.5
+  source: published
+  citation: "estimate: B300 InferenceX anchor / 2.5 (HBM4 20 TB/s vs HBM3e 8 TB/s)"
+- model: deepseek-v3.2
+  gpu: R200
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 4.48      # 11.2 ms / 2.5
+  source: published
+  citation: "estimate: B300 InferenceX anchor / 2.5"
+- model: deepseek-v3.2
+  gpu: R200
+  tp_size: 8
+  isl: 65536
+  osl: 512
+  tpot_ms: 2.76      # 6.9 ms / 2.5 (AgentX point)
+  source: published
+  citation: "estimate: B300 InferenceX AgentX anchor / 2.5"
+- model: qwen3.8-27b
+  gpu: R200
+  tp_size: 8
+  isl: 65536
+  osl: 512
+  tpot_ms: 5.64      # 14.1 ms / 2.5
+  source: published
+  citation: "estimate: B300 InferenceX AgentX anchor / 2.5"

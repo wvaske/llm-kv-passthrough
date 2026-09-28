@@ -107,6 +107,17 @@ GPU_PROFILES: dict[str, GPUProfile] = {
         nvlink_bandwidth_gb_s=3600.0,  # NVLink 6
         tdp_watts=1800,              # Max-Q config (Max-P reportedly 2300)
     ),
+    # Short name used by the timing anchors and lab configs: the Rubin R200
+    # package. Performance anchors are estimated from B300 by the HBM
+    # bandwidth ratio (20 / 8 = 2.5x); see timing/anchors/nvidia-r200.yaml.
+    "R200": GPUProfile(
+        name="NVIDIA Rubin R200 (VR200, projected, per package)",
+        bf16_tflops=8300.0,
+        hbm_bandwidth_tb_s=20.0,
+        hbm_capacity_gb=288,
+        nvlink_bandwidth_gb_s=3600.0,
+        tdp_watts=1800,
+    ),
     "RUBIN_ULTRA": GPUProfile(
         name="NVIDIA Rubin Ultra (projected, per 4-die package, NVL576/Kyber)",
         bf16_tflops=17400.0,         # derived: ~34.7 PF FP8 dense / 2 (slideware)

@@ -1,0 +1,29 @@
+# Timing anchors: NVIDIA H100 SXM. Decode anchors (TPOT = 1000 / tok/s/user)
+# from SemiAnalysis InferenceX (formerly InferenceMAX) published operating
+# points, read 2026-09-27 from inferencex.semianalysis.com compare pages.
+# DeepSeek R1 uses the DeepSeek V3 architecture (deepseek-v3.2 profile);
+# Llama 3.3 70B uses the Llama 3.1 70B architecture.
+- model: deepseek-v3.2
+  gpu: H100_SXM
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 23.8      # 42 tok/s/user, 266 tok/s/GPU (B200 vs H100 page, 1k/1k FP8)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b200-vs-h100"
+- model: deepseek-v3.2
+  gpu: H100_SXM
+  tp_size: 8
+  isl: 1024
+  osl: 1024
+  tpot_ms: 14.1      # 71 tok/s/user, 73 tok/s/GPU
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/deepseek-r1-b200-vs-h100"
+- model: llama-3.1-70b
+  gpu: H100_SXM
+  tp_size: 2
+  isl: 8192
+  osl: 1024
+  tpot_ms: 12.8      # 78 tok/s/user, 877 tok/s/chip (H100 vs H200 page, 8k/1k FP8)
+  source: published
+  citation: "https://inferencex.semianalysis.com/compare/llama-3-3-70b-h100-vs-h200"
