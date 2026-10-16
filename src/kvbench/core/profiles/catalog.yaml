@@ -21,6 +21,7 @@ gpus:
   MI455X_HELIOS: {name: AMD Instinct MI455X (projected), bf16_tflops: 10000, hbm_bandwidth_tb_s: 23.3, hbm_capacity_gb: 432, nvlink_bandwidth_gb_s: 3600, tdp_watts: 2200}
 models:
   llama-3.1-8b: {name: Llama 3.1 8B, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336}
+  llama-3.1-8b-1m: {name: Llama 3.1 8B 1M context, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, max_seq_len: 2097152}
   llama-3.1-70b: {name: Llama 3.1 70B, layers: 80, hidden: 8192, kv_heads: 8, num_heads: 64, intermediate: 28672}
   llama-3.1-405b: {name: Llama 3.1 405B, layers: 126, hidden: 16384, kv_heads: 8, num_heads: 128, intermediate: 53248}
   llama-3.2-1b: {name: Llama 3.2 1B, layers: 16, hidden: 2048, kv_heads: 8, num_heads: 32, intermediate: 8192}
@@ -34,3 +35,10 @@ models:
   qwen-2.5-72b: {name: Qwen 2.5 72B, layers: 80, hidden: 8192, kv_heads: 8, num_heads: 64, intermediate: 29568, vocab_size: 152064}
   mistral-7b: {name: Mistral 7B, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, vocab_size: 32000, max_seq_len: 32768}
   mixtral-8x7b: {name: Mixtral 8x7B, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, vocab_size: 32000, max_seq_len: 32768, params_billions_override: 12.9, total_params_billions: 46.7}
+  deepseek-r1-distill-32b: {name: DeepSeek-R1-Distill-Qwen 32B, layers: 64, hidden: 5120, kv_heads: 8, num_heads: 40, intermediate: 27648, vocab_size: 152064, max_seq_len: 131072}
+  qwen3-30b-a3b: {name: Qwen3 30B-A3B (3.3B active), layers: 48, hidden: 2048, kv_heads: 4, num_heads: 32, head_dim_override: 128, intermediate: 6144, vocab_size: 151936, max_seq_len: 262144, params_billions_override: 3.3, total_params_billions: 30.5}
+  # DeepSeek V4 (hybrid CSA m=4 / HCA m=128, shared K=V MQA, head_dim 512 stored FP8 + BF16 RoPE = 576 B/entry, CSA indexer key 64 B/entry; compress_ratio-0 layers are sliding-window only, not cached). Byte geometry: kv_layers = CSA layers, kv_latent_dim 164 fp8 ~= 576/4 + 64/4 per CSA layer plus the HCA share. Not real V4 tensors.
+  deepseek-v4-pro: {name: DeepSeek V4 Pro (CSA/HCA byte geometry), layers: 61, kv_layers: 29, hidden: 7168, kv_heads: 1, num_heads: 128, head_dim_override: 512, kv_latent_dim: 164, kv_dtype: fp8, intermediate: 3072, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 49, total_params_billions: 1600}
+  deepseek-v4-flash: {name: DeepSeek V4 Flash (CSA/HCA byte geometry), layers: 43, kv_layers: 20, hidden: 4096, kv_heads: 1, num_heads: 64, head_dim_override: 512, kv_latent_dim: 164, kv_dtype: fp8, intermediate: 2048, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 13, total_params_billions: 284}
+  # GLM-5.3 (glm_moe_dsa: MLA kv_lora_rank 512 + qk_rope 64 = 576 latent, 78 layers; same convention as deepseek-v3.2 above)
+  glm-5.3: {name: GLM-5.3 (MLA byte geometry), layers: 78, hidden: 6144, kv_heads: 1, num_heads: 64, head_dim_override: 192, kv_latent_dim: 576, intermediate: 2048, vocab_size: 154880, max_seq_len: 1048576, params_billions_override: 39, total_params_billions: 743}
