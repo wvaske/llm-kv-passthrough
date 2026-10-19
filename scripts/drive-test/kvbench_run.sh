@@ -38,7 +38,7 @@ fail(){ log "FAIL: $*"; python3 - "$OUTPUT" "$*" "$W" <<'EOF'
 import json,sys; json.dump({"kvbench.valid": False, "kvbench.error": sys.argv[2], "kvbench.workdir": sys.argv[3]}, open(sys.argv[1],"w"))
 EOF
   cleanup; exit 1; }
-cleanup(){ [ -n "${DMAX_ORIG:-}" ] && echo "$DMAX_ORIG" > "/sys/block/$DEV/queue/discard_max_bytes" 2>/dev/null; [ -n "${BT:-}" ] && pkill -INT -f "bpftrace /root/kv_iotrace.bt"; [ -n "${DT:-}" ] && pkill -INT -f "bpftrace /root/kv_discard.bt"; for i in $(seq 1 "$SERVERS"); do tmux kill-session -t "kvr$i" 2>/dev/null; done; pkill -f "kvbench serve.*--port $((BASEPORT+1))" 2>/dev/null; kill $IOS 2>/dev/null; true; }
+cleanup(){ [ -n "${DMAX_ORIG:-}" ] && { echo "$DMAX_ORIG" > "/sys/block/$DEV/queue/discard_max_bytes" || log "WARNING: could not restore discard_max_bytes"; }; [ -n "${BT:-}" ] && pkill -INT -f "bpftrace /root/kv_iotrace.bt"; [ -n "${DT:-}" ] && pkill -INT -f "bpftrace /root/kv_discard.bt"; for i in $(seq 1 "$SERVERS"); do tmux kill-session -t "kvr$i" 2>/dev/null; done; pkill -f "kvbench serve.*--port $((BASEPORT+1))" 2>/dev/null; kill $IOS 2>/dev/null; true; }
 IOS=""
 # Drive counters at every phase boundary -> run-to-run WAF ledger. host = NVMe data_units_written x 512000 B,
 # nand = OCP "Physical media units written" (bytes). Appended, never rewritten, so gaps between runs are counted too.
@@ -89,10 +89,18 @@ else echo "$MOUNT_OPTS" | grep -qw discard && DISCARD=1; fi
 log "mount options: $MOUNT_OPTS"
 env_record
 DQ=/sys/block/$DEV/queue; DMAX_ORIG=""
+# sysfs only accepts <= UINT_MAX bytes (4 GiB - 1), so the boot default (hw max, 2 TB) cannot be written back. A block request
+# is capped at ~4 GiB anyway (max seen 3.996 GiB at the 2 TB default), so the largest accepted 4 KiB-aligned value = default behaviour.
+DMAX_DEFAULT=$(( (4294967295 / $(cat $DQ/discard_granularity)) * $(cat $DQ/discard_granularity) ))
+[ "$(cat $DQ/discard_max_hw_bytes)" -lt "$DMAX_DEFAULT" ] && DMAX_DEFAULT=$(cat $DQ/discard_max_hw_bytes)
 if [ "$DMAX" != 0 ]; then
-  DMAX_ORIG=$(cat $DQ/discard_max_hw_bytes)      # restore target = hardware max (what the kernel uses by default)
+  DMAX_ORIG=$DMAX_DEFAULT
   echo "$DMAX" > $DQ/discard_max_bytes || fail "cannot set discard_max_bytes=$DMAX"
   [ "$(cat $DQ/discard_max_bytes)" -le "$DMAX" ] || fail "discard_max_bytes not applied (now $(cat $DQ/discard_max_bytes))"
+elif [ "$(cat $DQ/discard_max_bytes)" -lt "$DMAX_DEFAULT" ]; then
+  # an earlier run (or a crash) left a cap behind - put the default behaviour back before measuring
+  echo "$DMAX_DEFAULT" > $DQ/discard_max_bytes || fail "cannot restore discard_max_bytes default"
+  log "TRIM: discard_max_bytes was capped at a previous value; reset to $DMAX_DEFAULT (default behaviour)"
 fi
 DMAX_EFF=$(cat $DQ/discard_max_bytes)
 log "TRIM: discard_max_bytes=$DMAX_EFF (hw max $(cat $DQ/discard_max_hw_bytes), max_discard_segments $(cat $DQ/max_discard_segments), granularity $(cat $DQ/discard_granularity))"
