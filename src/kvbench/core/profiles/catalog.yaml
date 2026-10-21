@@ -22,6 +22,17 @@ gpus:
 models:
   llama-3.1-8b: {name: Llama 3.1 8B, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336}
   llama-3.1-8b-1m: {name: Llama 3.1 8B 1M context, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, max_seq_len: 2097152}
+  llama-3.1-8b-10m: {name: Llama 3.1 8B 10M context, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, max_seq_len: 10485760}
+  # same model with an FP8 (e4m3) KV cache - 64 KiB/token instead of 128 KiB/token (vLLM --kv-cache-dtype fp8)
+  llama-3.1-8b-fp8: {name: Llama 3.1 8B FP8-KV, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, kv_dtype: fp8}
+  # KV-size sweep (70 / 30 / 13 / 3-4 KB per token). Same compute shape for all (8B-class, so the emulated GPU
+  # timing is identical); ONLY the KV bytes per token differ: 61 layers x MLA latent x dtype. 70 KiB = DeepSeek V3.2 BF16 geometry,
+  # 30 KiB ~ V3.2 latent in FP8 at fewer layers (MLA + FP8), 13 KiB ~ compressed/sparse attention, 3-4 KiB = DeepSeek V4 class.
+  # max_seq_len 1M for all (2026-10-21): AgentX sub-agent turns reach ~666k tokens; 163840 rejected them -> 5-6 % failed requests.
+  kvsize-70k: {name: KV-size sweep 70 KiB/token (DS V3.2 MLA BF16 geometry), layers: 61, hidden: 7168, kv_heads: 1, num_heads: 128, head_dim_override: 192, kv_latent_dim: 576, intermediate: 18432, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 8}
+  kvsize-30k: {name: KV-size sweep 30 KiB/token, layers: 61, kv_layers: 52, hidden: 7168, kv_heads: 1, num_heads: 128, head_dim_override: 192, kv_latent_dim: 576, kv_dtype: fp8, intermediate: 18432, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 8}
+  kvsize-13k: {name: KV-size sweep 13 KiB/token, layers: 61, kv_layers: 23, hidden: 7168, kv_heads: 1, num_heads: 128, head_dim_override: 192, kv_latent_dim: 576, kv_dtype: fp8, intermediate: 18432, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 8}
+  kvsize-4k: {name: KV-size sweep 4 KiB/token (DS V4 class), layers: 61, kv_layers: 29, hidden: 7168, kv_heads: 1, num_heads: 128, head_dim_override: 512, kv_latent_dim: 144, kv_dtype: fp8, intermediate: 3072, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 8}
   llama-3.1-70b: {name: Llama 3.1 70B, layers: 80, hidden: 8192, kv_heads: 8, num_heads: 64, intermediate: 28672}
   llama-3.1-405b: {name: Llama 3.1 405B, layers: 126, hidden: 16384, kv_heads: 8, num_heads: 128, intermediate: 53248}
   llama-3.2-1b: {name: Llama 3.2 1B, layers: 16, hidden: 2048, kv_heads: 8, num_heads: 32, intermediate: 8192}
