@@ -433,6 +433,35 @@ class TestNewGenerationProfiles:
         assert p.effective_kv_layers == 16
         assert p.total_kv_cache_bytes_per_token == 64 * 1024
 
+    def test_llama31_8b_1m_same_kv_longer_context(self):
+        base, p = get_model_profile("llama-3.1-8b"), get_model_profile("llama-3.1-8b-1m")
+        # identical KV geometry; only the context limit grows (2M tokens) for 1M+ token sessions
+        assert p.total_kv_cache_bytes_per_token == base.total_kv_cache_bytes_per_token == 128 * 1024
+        assert p.max_seq_len == 2_097_152
+
+    def test_deepseek_r1_distill_32b_kv_per_token(self):
+        p = get_model_profile("deepseek-r1-distill-32b")
+        # 64 layers x 8 kv_heads x 128 head_dim x 2 (K+V) x 2 B = 256 KiB
+        assert p.total_kv_cache_bytes_per_token == 256 * 1024
+
+    def test_qwen3_30b_a3b_kv_per_token(self):
+        p = get_model_profile("qwen3-30b-a3b")
+        # 48 layers x 4 kv_heads x 128 head_dim x 2 (K+V) x 2 B = 96 KiB
+        assert p.total_kv_cache_bytes_per_token == 96 * 1024
+
+    def test_glm53_mla_kv_per_token(self):
+        p = get_model_profile("glm-5.3")
+        # MLA single latent like deepseek-v3.2: 78 layers x 576 elements x 2 B = 89,856 B
+        assert p.total_kv_cache_bytes_per_token == 78 * 576 * 2
+
+    def test_deepseek_v4_fp8_latent_kv_per_token(self):
+        pro, flash = get_model_profile("deepseek-v4-pro"), get_model_profile("deepseek-v4-flash")
+        # CSA layers only, 164-element fp8 latent (1 B): Pro 29 x 164 = 4,756 B, Flash 20 x 164 = 3,280 B
+        assert pro.effective_kv_dtype == flash.effective_kv_dtype == "fp8"
+        assert pro.total_kv_cache_bytes_per_token == 29 * 164
+        assert flash.total_kv_cache_bytes_per_token == 20 * 164
+        assert pro.max_seq_len == flash.max_seq_len == 1_048_576
+
 
 class TestFutureGpuProfiles:
     """Shipping + projected GPU profiles are registered and sane."""
