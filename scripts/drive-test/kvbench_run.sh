@@ -19,6 +19,7 @@ MAX_PENDING=0                        # emulator queue per server; 0 = auto 64 x 
 DTRACE=0                             # 1 = bpftrace every discard (TRIM) during the load: /root/kv_discard.bt -> discard.csv.zst + kvbench.discard_*
 MAX_CTX=2097152                      # emulator scheduler.max_context_tokens (model max_seq_len also caps; llama-3.1-8b-10m allows 10,485,760)
 ADMIT=1                              # LMCache disk admission: write a chunk to disk on its Nth store (1 = every store = stock; 2 = write on 2nd use). Needs /root/patch_lmcache_admit.py
+INST=0                               # instance number (0..9): several drives tested in parallel on one host. Instance i uses ports BASEPORT+100*i+1.., tmux kvr<i>_<n>
 DMAX=0                               # max bytes per TRIM command (/sys/block/<dev>/queue/discard_max_bytes); 0 = kernel default (hw max). Restored after the run.
 KVB=/root/llm-kv-passthrough-v1; AIPERF=/root/aiperf-venv/bin/aiperf; BASEPORT=8100
 
@@ -29,18 +30,23 @@ while [ $# -gt 0 ]; do
     prefill-tps) PREFILL_TPS=$v;; decode-tps) DECODE_TPS=$v;; cpu-gb) CPU_GB=$v;; disk-gb) DISK_GB=$v;;
     chunk) CHUNK=$v;; io-threads) IO_THREADS=$v;; odirect) ODIRECT=$v;; mnt) MNT=$v;; dev) DEV=$v;;
     sessions) SESSIONS=$v;; entries) ENTRIES=$v;; turns) TURNS=$v;; isl) ISL=$v;; osl) OSL=$v;; fill) FILL=$v;; seed) SEED=$v;;
-    output) OUTPUT=$v;; tag) TAG=$v;; kvbench) KVB=$v;; iotrace) IOTRACE=$v;; workload) WORKLOAD=$v;; traces) TRACES=$v;; max-isl) MAXISL=$v;; trace-delays) TRACE_DELAYS=$v;; discard) DISCARD=$v;; fstrim-every) FSTRIM_EVERY=$v;; cache-policy) POLICY=$v;; tier-pct) TIER_PCT=$v;; heavy-turns) HEAVY_TURNS=$v;; heavy-isl) HEAVY_ISL=$v;; req-timeout) REQ_TIMEOUT=$v;; max-out) MAX_OUT=$v;; max-pending) MAX_PENDING=$v;; discard-trace) DTRACE=$v;; discard-max) DMAX=$v;; max-ctx) MAX_CTX=$v;; disk-admit) ADMIT=$v;;
+    output) OUTPUT=$v;; tag) TAG=$v;; kvbench) KVB=$v;; iotrace) IOTRACE=$v;; workload) WORKLOAD=$v;; traces) TRACES=$v;; max-isl) MAXISL=$v;; trace-delays) TRACE_DELAYS=$v;; discard) DISCARD=$v;; fstrim-every) FSTRIM_EVERY=$v;; cache-policy) POLICY=$v;; tier-pct) TIER_PCT=$v;; heavy-turns) HEAVY_TURNS=$v;; heavy-isl) HEAVY_ISL=$v;; req-timeout) REQ_TIMEOUT=$v;; max-out) MAX_OUT=$v;; max-pending) MAX_PENDING=$v;; discard-trace) DTRACE=$v;; discard-max) DMAX=$v;; max-ctx) MAX_CTX=$v;; disk-admit) ADMIT=$v;; instance) INST=$v;;
     *) echo "unknown option --$k" >&2; exit 2;;
   esac
 done
 
+case "$INST" in [0-9]) ;; *) echo "--instance must be 0..9" >&2; exit 2;; esac
+BASEPORT=$(( BASEPORT + 100 * INST )); TMX="kvr${INST}_"     # instance 0: ports 8101.., tmux kvr0_1..
 W=$(mktemp -d /root/kv_v1/run.XXXXXX); LOG=$W/run.log
 log(){ echo "$(date '+%F %T') $*" | tee -a "$LOG" >&2; }
 fail(){ log "FAIL: $*"; python3 - "$OUTPUT" "$*" "$W" <<'EOF'
 import json,sys; json.dump({"kvbench.valid": False, "kvbench.error": sys.argv[2], "kvbench.workdir": sys.argv[3]}, open(sys.argv[1],"w"))
 EOF
   cleanup; exit 1; }
-cleanup(){ [ -n "${DMAX_ORIG:-}" ] && { echo "$DMAX_ORIG" > "/sys/block/$DEV/queue/discard_max_bytes" || log "WARNING: could not restore discard_max_bytes"; }; [ -n "${BT:-}" ] && pkill -INT -f "bpftrace /root/kv_iotrace.bt"; [ -n "${DT:-}" ] && pkill -INT -f "bpftrace /root/kv_discard.bt"; for i in $(seq 1 "$SERVERS"); do tmux kill-session -t "kvr$i" 2>/dev/null; done; pkill -f "kvbench serve.*--port $((BASEPORT+1))" 2>/dev/null; kill $IOS 2>/dev/null; true; }
+# tmux -t "=name" = exact session name (without "=" tmux matches prefixes: kvr0_1 would also kill kvr0_10).
+# pkill patterns are anchored to the python server binary: the tmux SERVER process keeps the first session's command line
+# (incl. "--port 8101") in its argv, so an unanchored "kvbench serve .*--port 8101" also killed the tmux server = every instance.
+cleanup(){ [ -n "${DMAX_ORIG:-}" ] && { echo "$DMAX_ORIG" > "/sys/block/$DEV/queue/discard_max_bytes" || log "WARNING: could not restore discard_max_bytes"; }; [ -n "${BT:-}" ] && pkill -INT -f "bpftrace /root/kv_iotrace.bt"; [ -n "${DT:-}" ] && pkill -INT -f "bpftrace /root/kv_discard.bt [0-9]+ $DEV"; for i in $(seq 1 "$SERVERS"); do tmux kill-session -t "=${TMX}$i" 2>/dev/null; done; for i in $(seq 1 "$SERVERS"); do pkill -f -- "^/root/llm-kv-passthrough-v1/\.venv/bin/python3? \.venv/bin/kvbench serve .*--port $((BASEPORT+i)) " 2>/dev/null; done; kill $IOS 2>/dev/null; true; }
 IOS=""
 # Drive counters at every phase boundary -> run-to-run WAF ledger. host = NVMe data_units_written x 512000 B,
 # nand = OCP "Physical media units written" (bytes). Appended, never rewritten, so gaps between runs are counted too.
@@ -83,7 +89,7 @@ SRC=$(findmnt -no SOURCE "$MNT") || fail "$MNT is not a mountpoint"
 [ -z "$DEV" ] && DEV=$(basename "$SRC")
 [ "$(basename "$SRC")" = "$DEV" ] || fail "$MNT is mounted from $SRC, not $DEV"
 SERIAL=$(cat /sys/block/"$DEV"/device/serial 2>/dev/null | xargs)
-pgrep -f "\.venv/bin/kvbench serve" >/dev/null && fail "another kvbench serve is already running"
+pgrep -f -- "^/root/llm-kv-passthrough-v1/\.venv/bin/python3? \.venv/bin/kvbench serve .*--port $((BASEPORT+1)) " >/dev/null && fail "instance $INST: a kvbench serve already uses port $((BASEPORT+1))"
 # LMCache 0.5.4 disk-tier accounting bug (re-stored chunks counted twice -> tier "full" while nearly empty, FileNotFoundError on
 # evict). Fixed by /root/patch_lmcache_disk.py (backport of LMCache 0.5.6). Refuse to measure with an unpatched LMCache.
 LMC_PATCH=$("$KVB/.venv/bin/python" /root/patch_lmcache_disk.py --check 2>/dev/null | head -1)
@@ -95,7 +101,7 @@ MOUNT_OPTS=$(findmnt -no OPTIONS "$MNT")
 # discard must come from the mount (kv_clean.sh fresh ... discard); verify instead of trusting the flag
 if [ "$DISCARD" = 1 ]; then echo "$MOUNT_OPTS" | grep -qw discard || fail "--discard 1 but $MNT is not mounted with discard (pass it to kv_clean.sh fresh)"
 else echo "$MOUNT_OPTS" | grep -qw discard && DISCARD=1; fi
-log "mount options: $MOUNT_OPTS"
+log "mount options: $MOUNT_OPTS"; log "instance $INST (ports $((BASEPORT+1))-$((BASEPORT+SERVERS)), tmux ${TMX}*)"
 env_record
 DQ=/sys/block/$DEV/queue; DMAX_ORIG=""
 # sysfs only accepts <= UINT_MAX bytes (4 GiB - 1), so the boot default (hw max, 2 TB) cannot be written back. A block request
@@ -132,13 +138,13 @@ log "disk tier: ${DISK_GB} GiB ($(( DISK_GB * 1073741824 / 1000000000 )) GB) per
 [ "$ADMIT" != 1 ] && log "disk admission: a chunk is written to the disk tier on its ${ADMIT}th store (DCWE439_ADMIT)"
 [ ${#WLS[@]} -gt 1 ] && log "mixed workload: $(for i in $(seq 1 "$SERVERS"); do printf 's%s=%s ' $i $(wl_of $i); done)"
 log "emulator limits: request_timeout=${REQ_TIMEOUT}s max_context_tokens=$MAX_CTX max_output_tokens=$MAX_OUT max_active=$((USERS*2)) max_pending=$MAX_PENDING"
-echo 3 > /proc/sys/vm/drop_caches
+[ "$(pgrep -fc '\.venv/bin/kvbench serve')" = 0 ] && echo 3 > /proc/sys/vm/drop_caches   # host-wide: skip when another instance runs
 for i in $(seq 1 "$SERVERS"); do
   mkdir -p "$MNT/lmcache_v1/s$i"
   printf 'cache_policy: %s\nchunk_size: %s\nlocal_cpu: true\nmax_local_cpu_size: %s\nlocal_disk: "file://%s/lmcache_v1/s%s/"\nmax_local_disk_size: %s\nextra_config:\n  use_odirect: %s\n  disk_io_threads: %s\n' \
     "$POLICY" "$CHUNK" "$CPU_GB" "$MNT" "$i" "$DISK_GB" "$ODIRECT" "$IO_THREADS" > "$W/lmcache-s$i.yaml"
   [ "$ADMIT" != 1 ] && printf '  disk_admit_min_puts: %s\n  disk_admit_seen_max: 4000000\n' "$ADMIT" >> "$W/lmcache-s$i.yaml"
-  tmux new-session -d -s "kvr$i" "cd $KVB && KVBENCH_KV__MAX_CPU_MEMORY_GB=$CPU_GB KVBENCH_SCHEDULER__REQUEST_TIMEOUT_S=$REQ_TIMEOUT KVBENCH_SCHEDULER__MAX_CONTEXT_TOKENS=$MAX_CTX KVBENCH_SCHEDULER__MAX_REQUEST_BYTES=67108864 KVBENCH_SCHEDULER__MAX_OUTPUT_TOKENS=$MAX_OUT .venv/bin/kvbench serve --model $(model_of $i) --gpu $GPU $RATE_ARGS --max-active $((USERS*2)) --max-pending $MAX_PENDING --lmcache-config $W/lmcache-s$i.yaml --port $((BASEPORT+i)) > $W/serve-s$i.log 2>&1"
+  tmux new-session -d -s "${TMX}$i" "cd $KVB && KVBENCH_KV__MAX_CPU_MEMORY_GB=$CPU_GB KVBENCH_SCHEDULER__REQUEST_TIMEOUT_S=$REQ_TIMEOUT KVBENCH_SCHEDULER__MAX_CONTEXT_TOKENS=$MAX_CTX KVBENCH_SCHEDULER__MAX_REQUEST_BYTES=67108864 KVBENCH_SCHEDULER__MAX_OUTPUT_TOKENS=$MAX_OUT .venv/bin/kvbench serve --model $(model_of $i) --gpu $GPU $RATE_ARGS --max-active $((USERS*2)) --max-pending $MAX_PENDING --lmcache-config $W/lmcache-s$i.yaml --port $((BASEPORT+i)) --host 127.0.0.1 > $W/serve-s$i.log 2>&1"
 done
 for i in $(seq 1 "$SERVERS"); do for t in $(seq 90); do
   curl -sf "localhost:$((BASEPORT+i))/health" >/dev/null && break
@@ -179,7 +185,7 @@ else
   WL_ARGS="--synthetic-input-tokens-mean $ISL --output-tokens-mean $OSL --num-sessions $SESSIONS --num-dataset-entries $ENTRIES --conversation-turn-mean $TURNS"
 fi; }
 declare -A WLA; for x in "${WLS[@]}"; do [ -n "${WLA[$x]:-}" ] || { wl_args "$x"; WLA[$x]=$WL_ARGS; }; done
-sync; echo 3 > /proc/sys/vm/drop_caches
+sync; [ "$(pgrep -fc '\.venv/bin/kvbench serve')" -le "$SERVERS" ] && echo 3 > /proc/sys/vm/drop_caches   # host-wide: only when this instance is alone
 DT=""
 if [ "$DTRACE" = 1 ]; then
   DEVT=$(( (16#$(stat -c %t /dev/$DEV) << 20) | 16#$(stat -c %T /dev/$DEV) ))
@@ -206,12 +212,12 @@ wait $PIDS
 kill $HB 2>/dev/null; [ -n "$FT" ] && kill $FT 2>/dev/null
 kill $IOS 2>/dev/null; IOS=""
 sync; snap load_end
-if [ -n "$DT" ]; then pkill -INT -f "bpftrace /root/kv_discard.bt"; wait $DT 2>/dev/null; DT=""
+if [ -n "$DT" ]; then pkill -INT -f "bpftrace /root/kv_discard.bt [0-9]+ $DEV"; wait $DT 2>/dev/null; DT=""
   python3 /root/kv_discard_summary.py "$W/discard.csv.zst" > "$W/discard_summary.json" 2>> "$W/discard.err"
   log "discard trace stopped: $(du -h "$W/discard.csv.zst" | cut -f1) compressed; $(python3 -c "import json;d=json.load(open('$W/discard_summary.json'));print(d['rq_GiB'].get('count'),'cmds, p50',d['rq_GiB'].get('p50'),'GiB,',d['nvme_ranges_per_cmd'].get('p50'),'ranges')" 2>/dev/null)"
 fi
 if [ -n "$BT" ]; then pkill -INT -f "bpftrace /root/kv_iotrace.bt"; wait $BT 2>/dev/null; BT=""
-  LS=$(awk -F, '$3=="load_start"{print $2}' "$LEDGER" | tail -1); LE=$(awk -F, '$3=="load_end"{print $2}' "$LEDGER" | tail -1)
+  LS=$(awk -F, -v w="$W" '$3=="load_start" && $6==w {print $2}' "$LEDGER" | tail -1); LE=$(awk -F, -v w="$W" '$3=="load_end" && $6==w {print $2}' "$LEDGER" | tail -1)
   python3 /root/kv_iotrace_summary.py "$W/iotrace.csv.zst" > "$W/iotrace_all.json" 2>> "$W/iotrace.err"
   python3 /root/kv_iotrace_summary.py "$W/iotrace.csv.zst" "$LS" "$LE" > "$W/iotrace_load.json" 2>> "$W/iotrace.err"
   log "iotrace stopped: $(du -h "$W/iotrace.csv.zst" | cut -f1) compressed"
@@ -229,7 +235,7 @@ python3 - "$W" "$OUTPUT" "$DEV" <<EOF
 import csv, glob, json, os, sys
 W, OUT, DEV = sys.argv[1:4]
 r = {"kvbench.valid": True, "kvbench.version": "v1-rate-based@" + os.popen("git -C $KVB rev-parse --short HEAD").read().strip(),
-     "kvbench.wrapper_rev": "$(md5sum "$0" | cut -c1-8)", "kvbench.workload": "$WORKLOAD", "kvbench.heavy_turns": $HEAVY_TURNS, "kvbench.request_timeout_s": $REQ_TIMEOUT, "kvbench.max_output_tokens": $MAX_OUT, "kvbench.max_pending": $MAX_PENDING, "kvbench.max_context_tokens": $MAX_CTX, "kvbench.lmcache_patch": "$LMC_PATCH", "kvbench.discard_max_bytes": ${DMAX_EFF:-0}, "kvbench.discard_max_set": $DMAX, "kvbench.heavy_isl": $HEAVY_ISL, "kvbench.disk_admit_min_puts": $ADMIT, "kvbench.discard": $DISCARD, "kvbench.fstrim_every_s": $FSTRIM_EVERY,
+     "kvbench.wrapper_rev": "$(md5sum "$0" | cut -c1-8)", "kvbench.workload": "$WORKLOAD", "kvbench.heavy_turns": $HEAVY_TURNS, "kvbench.request_timeout_s": $REQ_TIMEOUT, "kvbench.max_output_tokens": $MAX_OUT, "kvbench.max_pending": $MAX_PENDING, "kvbench.max_context_tokens": $MAX_CTX, "kvbench.lmcache_patch": "$LMC_PATCH", "kvbench.discard_max_bytes": ${DMAX_EFF:-0}, "kvbench.discard_max_set": $DMAX, "kvbench.heavy_isl": $HEAVY_ISL, "kvbench.disk_admit_min_puts": $ADMIT, "kvbench.instance": $INST, "kvbench.discard": $DISCARD, "kvbench.fstrim_every_s": $FSTRIM_EVERY,
      "kvbench.cache_policy": "$POLICY", "kvbench.tier_pct": $TIER_PCT, "kvbench.mount_opts": "$MOUNT_OPTS",
      "kvbench.fstrim_calls": int(os.popen("grep -c trimmed $W/fstrim.log 2>/dev/null").read().strip() or 0), "kvbench.max_isl": $MAXISL, "kvbench.trace_delays": $TRACE_DELAYS,
      "kvbench.model": "$MODEL", "kvbench.model_count": ${#MODELS[@]},
@@ -331,6 +337,18 @@ for f in glob.glob(f"{W}/serve-s*.log"):
             d = ast.literal_eval(last.split("DCWE439_ADMIT stats ", 1)[1].rsplit(" seen_set", 1)[0])
             adm["puts"] += d.get("puts", 0); adm["skipped"] += d.get("skipped", 0)
         except Exception: pass
+cnt = {}
+for f in glob.glob(f"{W}/serve-s*.log"):   # DCWE439_COUNTERS: last line per server = cumulative disk-tier writes / deletes (incl. warmup)
+    last = None
+    for line in open(f, errors="replace"):
+        if "DCWE439_COUNTERS" in line: last = line
+    if last:
+        import ast
+        try:
+            d = ast.literal_eval(last.split("DCWE439_COUNTERS ", 1)[1].rsplit(" usage=", 1)[0])
+            for k, v in d.items(): cnt[k] = cnt.get(k, 0) + v
+        except Exception: pass
+if cnt: r.update({f"kvbench.tier_{k}": v for k, v in cnt.items()})
 if adm["puts"]: r.update({"kvbench.admit_puts": adm["puts"], "kvbench.admit_skipped": adm["skipped"], "kvbench.admit_skipped_pct": round(100 * adm["skipped"] / adm["puts"], 1)})
 S = {}
 for line in open(f"{W}/smart.txt") if os.path.exists(f"{W}/smart.txt") else []:
