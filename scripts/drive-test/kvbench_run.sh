@@ -17,6 +17,7 @@ DISCARD=0; FSTRIM_EVERY=0; POLICY=LRU; TIER_PCT=90; HEAVY_TURNS=100; HEAVY_ISL=0
 MAX_OUT=0                            # emulator max_output_tokens; 0 = auto (agentx 65536: traces ask up to 40k; else max(2xOSL,4096))
 MAX_PENDING=0                        # emulator queue per server; 0 = auto 64 x users (was 8 x users -> 503 "queue is full" in AgentX)
 DTRACE=0                             # 1 = bpftrace every discard (TRIM) during the load: /root/kv_discard.bt -> discard.csv.zst + kvbench.discard_*
+MAX_CTX=2097152                      # emulator scheduler.max_context_tokens (model max_seq_len also caps; llama-3.1-8b-10m allows 10,485,760)
 DMAX=0                               # max bytes per TRIM command (/sys/block/<dev>/queue/discard_max_bytes); 0 = kernel default (hw max). Restored after the run.
 KVB=/root/llm-kv-passthrough-v1; AIPERF=/root/aiperf-venv/bin/aiperf; BASEPORT=8100
 
@@ -27,7 +28,7 @@ while [ $# -gt 0 ]; do
     prefill-tps) PREFILL_TPS=$v;; decode-tps) DECODE_TPS=$v;; cpu-gb) CPU_GB=$v;; disk-gb) DISK_GB=$v;;
     chunk) CHUNK=$v;; io-threads) IO_THREADS=$v;; odirect) ODIRECT=$v;; mnt) MNT=$v;; dev) DEV=$v;;
     sessions) SESSIONS=$v;; entries) ENTRIES=$v;; turns) TURNS=$v;; isl) ISL=$v;; osl) OSL=$v;; fill) FILL=$v;; seed) SEED=$v;;
-    output) OUTPUT=$v;; tag) TAG=$v;; kvbench) KVB=$v;; iotrace) IOTRACE=$v;; workload) WORKLOAD=$v;; traces) TRACES=$v;; max-isl) MAXISL=$v;; trace-delays) TRACE_DELAYS=$v;; discard) DISCARD=$v;; fstrim-every) FSTRIM_EVERY=$v;; cache-policy) POLICY=$v;; tier-pct) TIER_PCT=$v;; heavy-turns) HEAVY_TURNS=$v;; heavy-isl) HEAVY_ISL=$v;; req-timeout) REQ_TIMEOUT=$v;; max-out) MAX_OUT=$v;; max-pending) MAX_PENDING=$v;; discard-trace) DTRACE=$v;; discard-max) DMAX=$v;;
+    output) OUTPUT=$v;; tag) TAG=$v;; kvbench) KVB=$v;; iotrace) IOTRACE=$v;; workload) WORKLOAD=$v;; traces) TRACES=$v;; max-isl) MAXISL=$v;; trace-delays) TRACE_DELAYS=$v;; discard) DISCARD=$v;; fstrim-every) FSTRIM_EVERY=$v;; cache-policy) POLICY=$v;; tier-pct) TIER_PCT=$v;; heavy-turns) HEAVY_TURNS=$v;; heavy-isl) HEAVY_ISL=$v;; req-timeout) REQ_TIMEOUT=$v;; max-out) MAX_OUT=$v;; max-pending) MAX_PENDING=$v;; discard-trace) DTRACE=$v;; discard-max) DMAX=$v;; max-ctx) MAX_CTX=$v;;
     *) echo "unknown option --$k" >&2; exit 2;;
   esac
 done
@@ -120,13 +121,13 @@ log "disk tier: ${DISK_GB} GiB ($(( DISK_GB * 1073741824 / 1000000000 )) GB) per
 # ---------------- servers ----------------
 [ "$MAX_OUT" = 0 ] && { if [ "$WORKLOAD" = agentx ]; then MAX_OUT=65536; else MAX_OUT=$(( OSL*2 > 4096 ? OSL*2 : 4096 )); fi; }
 [ "$MAX_PENDING" = 0 ] && MAX_PENDING=$(( USERS*64 ))
-log "emulator limits: request_timeout=${REQ_TIMEOUT}s max_output_tokens=$MAX_OUT max_active=$((USERS*2)) max_pending=$MAX_PENDING"
+log "emulator limits: request_timeout=${REQ_TIMEOUT}s max_context_tokens=$MAX_CTX max_output_tokens=$MAX_OUT max_active=$((USERS*2)) max_pending=$MAX_PENDING"
 echo 3 > /proc/sys/vm/drop_caches
 for i in $(seq 1 "$SERVERS"); do
   mkdir -p "$MNT/lmcache_v1/s$i"
   printf 'cache_policy: %s\nchunk_size: %s\nlocal_cpu: true\nmax_local_cpu_size: %s\nlocal_disk: "file://%s/lmcache_v1/s%s/"\nmax_local_disk_size: %s\nextra_config:\n  use_odirect: %s\n  disk_io_threads: %s\n' \
     "$POLICY" "$CHUNK" "$CPU_GB" "$MNT" "$i" "$DISK_GB" "$ODIRECT" "$IO_THREADS" > "$W/lmcache-s$i.yaml"
-  tmux new-session -d -s "kvr$i" "cd $KVB && KVBENCH_KV__MAX_CPU_MEMORY_GB=$CPU_GB KVBENCH_SCHEDULER__REQUEST_TIMEOUT_S=$REQ_TIMEOUT KVBENCH_SCHEDULER__MAX_CONTEXT_TOKENS=2097152 KVBENCH_SCHEDULER__MAX_REQUEST_BYTES=67108864 KVBENCH_SCHEDULER__MAX_OUTPUT_TOKENS=$MAX_OUT .venv/bin/kvbench serve --model $(model_of $i) --gpu $GPU $RATE_ARGS --max-active $((USERS*2)) --max-pending $MAX_PENDING --lmcache-config $W/lmcache-s$i.yaml --port $((BASEPORT+i)) > $W/serve-s$i.log 2>&1"
+  tmux new-session -d -s "kvr$i" "cd $KVB && KVBENCH_KV__MAX_CPU_MEMORY_GB=$CPU_GB KVBENCH_SCHEDULER__REQUEST_TIMEOUT_S=$REQ_TIMEOUT KVBENCH_SCHEDULER__MAX_CONTEXT_TOKENS=$MAX_CTX KVBENCH_SCHEDULER__MAX_REQUEST_BYTES=67108864 KVBENCH_SCHEDULER__MAX_OUTPUT_TOKENS=$MAX_OUT .venv/bin/kvbench serve --model $(model_of $i) --gpu $GPU $RATE_ARGS --max-active $((USERS*2)) --max-pending $MAX_PENDING --lmcache-config $W/lmcache-s$i.yaml --port $((BASEPORT+i)) > $W/serve-s$i.log 2>&1"
 done
 for i in $(seq 1 "$SERVERS"); do for t in $(seq 90); do
   curl -sf "localhost:$((BASEPORT+i))/health" >/dev/null && break
@@ -177,7 +178,7 @@ snap load_start
 iostat -dxm "$DEV" 5 > "$W/iostat.log" 2>&1 & IOS=$!
 log "load: $SERVERS x $USERS users, ${DURATION}s"; PIDS=""
 for i in $(seq 1 "$SERVERS"); do
-  HF_HUB_OFFLINE=1 AIPERF_DATASET_CONFIGURATION_TIMEOUT=${AIPERF_DATASET_TIMEOUT:-3600} AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT=${AIPERF_DATASET_TIMEOUT:-3600} timeout $((DURATION+4500)) "$AIPERF" profile --url "http://localhost:$((BASEPORT+i))" --model "$(model_of $i)" \
+  HF_HUB_OFFLINE=1 AIPERF_DATASET_CONFIGURATION_TIMEOUT=${AIPERF_DATASET_TIMEOUT:-3600} AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT=${AIPERF_DATASET_TIMEOUT:-3600} timeout $((DURATION+REQ_TIMEOUT+900)) "$AIPERF" profile --url "http://localhost:$((BASEPORT+i))" --model "$(model_of $i)" \
     --endpoint-type chat --streaming --tokenizer gpt2 --use-server-token-count \
     --concurrency "$USERS" --benchmark-duration "$DURATION" --request-timeout-seconds "$REQ_TIMEOUT" $WL_ARGS \
     --random-seed $((SEED+i)) --ui none --artifact-dir "$W/aiperf_s$i" > "$W/aiperf_s$i.log" 2>&1 & PIDS="$PIDS $!"
@@ -215,7 +216,7 @@ python3 - "$W" "$OUTPUT" "$DEV" <<EOF
 import csv, glob, json, os, sys
 W, OUT, DEV = sys.argv[1:4]
 r = {"kvbench.valid": True, "kvbench.version": "v1-rate-based@" + os.popen("git -C $KVB rev-parse --short HEAD").read().strip(),
-     "kvbench.wrapper_rev": "$(md5sum "$0" | cut -c1-8)", "kvbench.workload": "$WORKLOAD", "kvbench.heavy_turns": $HEAVY_TURNS, "kvbench.request_timeout_s": $REQ_TIMEOUT, "kvbench.max_output_tokens": $MAX_OUT, "kvbench.max_pending": $MAX_PENDING, "kvbench.lmcache_patch": "$LMC_PATCH", "kvbench.discard_max_bytes": ${DMAX_EFF:-0}, "kvbench.discard_max_set": $DMAX, "kvbench.heavy_isl": $HEAVY_ISL, "kvbench.discard": $DISCARD, "kvbench.fstrim_every_s": $FSTRIM_EVERY,
+     "kvbench.wrapper_rev": "$(md5sum "$0" | cut -c1-8)", "kvbench.workload": "$WORKLOAD", "kvbench.heavy_turns": $HEAVY_TURNS, "kvbench.request_timeout_s": $REQ_TIMEOUT, "kvbench.max_output_tokens": $MAX_OUT, "kvbench.max_pending": $MAX_PENDING, "kvbench.max_context_tokens": $MAX_CTX, "kvbench.lmcache_patch": "$LMC_PATCH", "kvbench.discard_max_bytes": ${DMAX_EFF:-0}, "kvbench.discard_max_set": $DMAX, "kvbench.heavy_isl": $HEAVY_ISL, "kvbench.discard": $DISCARD, "kvbench.fstrim_every_s": $FSTRIM_EVERY,
      "kvbench.cache_policy": "$POLICY", "kvbench.tier_pct": $TIER_PCT, "kvbench.mount_opts": "$MOUNT_OPTS",
      "kvbench.fstrim_calls": int(os.popen("grep -c trimmed $W/fstrim.log 2>/dev/null").read().strip() or 0), "kvbench.max_isl": $MAXISL, "kvbench.trace_delays": $TRACE_DELAYS,
      "kvbench.model": "$MODEL", "kvbench.model_count": ${#MODELS[@]},
