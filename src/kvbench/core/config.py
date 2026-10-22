@@ -56,9 +56,13 @@ class KVStackConfig(ConfigModel):
             LMCache is configured from its LMCACHE_* environment variables.
     """
 
-    stack: Literal["lmcache", "hicache", "kvbm"] = Field(
+    stack: Literal["lmcache", "hicache", "kvbm", "lmcache_mp"] = Field(
         default="lmcache",
-        description="KV management stack",
+        description="KV management stack; 'lmcache_mp' = LMCache multiprocess storage manager (one per node, L1 + L2 adapters with watermark eviction, as an lmcache server)",
+    )
+    lmcache_mp_config_file: Path | None = Field(
+        default=None,
+        description="lmcache_mp stack: JSON with server_args (lmcache server storage flags) and restore_window_chunks",
     )
     hicache: HiCacheConfig = Field(default_factory=HiCacheConfig)
     lmcache_config_file: Path | None = Field(
