@@ -17,10 +17,26 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
 
 from kvbench.core.gpu_profiles import GPU_PROFILES, GPUProfile, load_gpu_profiles
 from kvbench.core.models import MODEL_PROFILES, ModelProfile, load_model_profiles
+from kvbench.core.payload import PayloadGenerator
+from kvbench.core.ranks import parse_active_ranks, rank_selection_info, resolve_active_ranks
 
 
 class ConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class HiCacheConfig(ConfigModel):
+    """SGLang HiCacheFile L3 and the V1 modeled host-tier policy (GiB/rank)."""
+
+    storage_path: Path | None = None
+    page_size: int = Field(default=256, ge=1, le=65536)
+    host_size_gb: float = Field(default=0.25, gt=0)
+    disk_size_gb: float = Field(default=0.5, gt=0)
+    min_free_bytes: int = Field(default=64 * 1024**2, ge=0)
+    eviction_ratio: float = Field(default=0.9, gt=0, le=1)
+    mem_layout: Literal["page_first", "page_first_direct", "layer_first"] = "page_first_direct"
+    write_policy: Literal["write_through", "write_back"] = "write_through"
+    write_batch_pages: int = Field(default=32, ge=1, le=128)
 
 
 class KVStackConfig(ConfigModel):
@@ -40,10 +56,15 @@ class KVStackConfig(ConfigModel):
             LMCache is configured from its LMCACHE_* environment variables.
     """
 
-    stack: Literal["lmcache", "kvbm"] = Field(
+    stack: Literal["lmcache", "hicache", "kvbm", "lmcache_mp"] = Field(
         default="lmcache",
-        description="KV management stack",
+        description="KV management stack; 'lmcache_mp' = LMCache multiprocess storage manager (one per node, L1 + L2 adapters with watermark eviction, as an lmcache server)",
     )
+    lmcache_mp_config_file: Path | None = Field(
+        default=None,
+        description="lmcache_mp stack: JSON with server_args (lmcache server storage flags) and restore_window_chunks",
+    )
+    hicache: HiCacheConfig = Field(default_factory=HiCacheConfig)
     lmcache_config_file: Path | None = Field(
         default=None,
         description="Path to LMCache's own config file (LMCACHE_* env vars are used when unset)",
@@ -59,9 +80,26 @@ class KVStackConfig(ConfigModel):
         "incompressible like real KV cache (storage systems with compression "
         "or dedup report unrealistically good numbers against zero-filled data)",
     )
+    payload_generator: PayloadGenerator = Field(
+        default="torch", description="Synthetic entropy source: legacy torch bytes, or bounded fast SFC64 words",
+    )
     max_cpu_memory_gb: float = Field(default=2.0, gt=0, description="Host guard: maximum aggregate LMCache CPU tier allocation (GiB)")
     max_chunk_mb: int = Field(default=256, ge=1, le=4096, description="Reject a rank chunk larger than this payload guard (MiB)")
+    lmcache_reuse_history_entries: int = Field(
+        default=65536, ge=1, le=1000000,
+        description="Bound each LMCache LRU diagnostic reuse-history table; does not change cache capacity or eviction order",
+    )
     seed: int = Field(default=24301, ge=0, le=2**63 - 1)
+    active_ranks: list[int] | None = Field(
+        default=None,
+        description="Logical KV rank IDs to instantiate (null = all). TP/PP sizing and engine rates remain unchanged. "
+        "Global rank = pp_rank * tp_size + tp_rank; e.g. [0] exercises one TP=8 shard.",
+    )
+
+    @field_validator("active_ranks", mode="before")
+    @classmethod
+    def parse_rank_selection(cls, value: object) -> list[int] | None:
+        return parse_active_ranks(value)
 
     @field_validator("lmcache_config_file", mode="before")
     @classmethod
@@ -76,6 +114,13 @@ class KVStackConfig(ConfigModel):
         """Fail loudly on a nonexistent LMCache config file."""
         if self.lmcache_config_file is not None and not self.lmcache_config_file.exists():
             raise ValueError(f"LMCache config file not found: {self.lmcache_config_file}")
+        if self.stack == "hicache":
+            if self.hicache.storage_path is None:
+                raise ValueError("HiCache requires kv.hicache.storage_path")
+            if self.lmcache_config_file is not None:
+                raise ValueError("HiCache cannot use lmcache_config_file")
+        elif self.hicache != HiCacheConfig():
+            raise ValueError("kv.hicache options require kv.stack: hicache")
         return self
 
 
@@ -408,7 +453,8 @@ class KVBenchConfig(ConfigModel):
             raise ValueError(f"Unknown GPU profile: {self.gpu.gpu_profile!r}")
         self._model = models[self.server.model_profile]
         self._gpu = gpus[self.gpu.gpu_profile]
-        self._model.rank_layout(self.gpu.tp_size, self.timing.pp_size)
+        layout = self._model.rank_layout(self.gpu.tp_size, self.timing.pp_size)
+        resolve_active_ranks(len(layout), self.kv.active_ranks)
         return self
 
     @property
@@ -440,7 +486,7 @@ class KVBenchConfig(ConfigModel):
         from importlib.metadata import PackageNotFoundError, version
 
         versions: dict[str, str | None] = {}
-        for package in ("kvbench", "lmcache", "torch"):
+        for package in ("kvbench", "lmcache", "torch", "numpy"):
             try:
                 versions[package] = version(package)
             except PackageNotFoundError:
@@ -448,6 +494,9 @@ class KVBenchConfig(ConfigModel):
         return {"fidelity": "rate-v1", "config": self.model_dump(mode="json"),
                 "model": asdict(self.model), "hardware": asdict(self.hardware),
                 "ranks": self.model.rank_layout(self.gpu.tp_size, self.timing.pp_size),
+                "kv_rank_selection": rank_selection_info(
+                    self.model.rank_layout(self.gpu.tp_size, self.timing.pp_size), self.kv.active_ranks
+                ),
                 "versions": versions}
 
     @classmethod
@@ -512,7 +561,8 @@ class KVBenchConfig(ConfigModel):
         # Paths belong to the configuration file, not the caller's cwd.
         if isinstance(data, dict):
             for mapping, key in ((data, "profiles_file"), (data.get("kv", {}), "lmcache_config_file"),
-                                 (data.get("kv", {}), "trace_file"), (data.get("timing", {}), "anchors_file")):
+                                 (data.get("kv", {}), "trace_file"), (data.get("timing", {}), "anchors_file"),
+                                 (data.get("kv", {}).get("hicache", {}), "storage_path")):
                 if isinstance(mapping, dict) and mapping.get(key):
                     value = Path(mapping[key])
                     mapping[key] = str((path.parent / value).resolve()) if not value.is_absolute() else str(value)

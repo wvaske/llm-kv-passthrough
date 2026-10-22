@@ -7,6 +7,8 @@ export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export PYTHONDONTWRITEBYTECODE=1
 export LMCACHE_LOG_LEVEL=ERROR
+# Repeated model/rank fixtures must not spawn background HTTP usage reporters.
+export LMCACHE_TRACK_USAGE=false
 export CUDA_VISIBLE_DEVICES=""
 export HIP_VISIBLE_DEVICES=""
 export ROCR_VISIBLE_DEVICES=""

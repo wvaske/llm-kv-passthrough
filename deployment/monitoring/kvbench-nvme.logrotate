@@ -1,0 +1,10 @@
+/var/lib/kvbench-nvme/samples.jsonl /var/lib/kvbench-nvme/*.stream {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 wvaske wvaske
+    su wvaske wvaske
+}

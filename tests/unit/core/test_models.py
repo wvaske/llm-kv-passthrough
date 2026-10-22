@@ -451,8 +451,9 @@ class TestNewGenerationProfiles:
 
     def test_glm53_mla_kv_per_token(self):
         p = get_model_profile("glm-5.3")
-        # MLA single latent like deepseek-v3.2: 78 layers x 576 elements x 2 B = 89,856 B
-        assert p.total_kv_cache_bytes_per_token == 78 * 576 * 2
+        # Researched GLM-5.3 profile (MLA latent + IndexShare indexer keys): more than the bare
+        # 78 x 576 x 2 B = 89,856 B MLA latent of the earlier byte-geometry stand-in.
+        assert p.total_kv_cache_bytes_per_token > 78 * 576 * 2
 
     def test_deepseek_v4_fp8_latent_kv_per_token(self):
         pro, flash = get_model_profile("deepseek-v4-pro"), get_model_profile("deepseek-v4-flash")

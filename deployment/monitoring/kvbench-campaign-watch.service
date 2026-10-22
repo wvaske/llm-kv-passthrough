@@ -1,0 +1,20 @@
+[Unit]
+Description=KV-Bench read-only campaign progress and health observer
+After=network-online.target kvbench-nvme.service
+
+[Service]
+Type=simple
+User=wvaske
+WorkingDirectory=/mnt/development/wvaske/llm-kv-passthrough
+Environment=MALLOC_ARENA_MAX=2
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/mnt/development/wvaske/llm-kv-passthrough/.venv/bin/python -m kvbench.benchmark.campaign_watch --artifacts /mnt/development/wvaske/kvbench-runs --telemetry /var/lib/kvbench-nvme/experiment.influx --serial 2337448A0113 --device nvme6 --output /var/lib/kvbench-nvme/campaign-status.json --interval 10
+Restart=on-failure
+RestartSec=10
+MemoryMax=128M
+CPUQuota=10%
+Nice=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

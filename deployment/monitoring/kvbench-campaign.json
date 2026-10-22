@@ -1,0 +1,1388 @@
+{
+  "uid": "kvbench-campaign",
+  "title": "KV-Bench \u2014 Live Campaign",
+  "tags": [
+    "kvbench",
+    "nvme",
+    "campaign"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Live campaign \u2014 follows phase/run changes automatically",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Updates every **10 seconds** and follows the active phase/run automatically. ETA uses a rolling observed rate and is hidden when stale, stopped or draining. **Preparation WAF is not a cache-comparison result.** Live cards use the latest observer point; charts follow the time picker. [Detailed WAF dashboard](/d/kvbench-nvme-waf)"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Campaign state",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "RUNNING": {
+                  "color": "green"
+                },
+                "COMPLETE": {
+                  "color": "green"
+                },
+                "STOPPED": {
+                  "color": "orange"
+                },
+                "FAILED": {
+                  "color": "red"
+                },
+                "STARTING": {
+                  "color": "orange"
+                },
+                "STOPPING": {
+                  "color": "orange"
+                },
+                "ACTIVATING": {
+                  "color": "orange"
+                },
+                "RUNNING \u2014 WAITING FOR TELEMETRY": {
+                  "color": "orange"
+                },
+                "STATUS FEED STALE \u2014 CHECK TELEMETRY": {
+                  "color": "red"
+                },
+                "RUNNING \u2014 TELEMETRY STALE/INVALID": {
+                  "color": "orange"
+                },
+                "OBSERVER ERROR": {
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^state_label$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"state_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"state_label\"}) |> map(fn: (r) => ({r with state_label: if uint(v: now()) - uint(v: r._time) > uint(v: 30000000000) then \"STATUS FEED STALE \u2014 CHECK TELEMETRY\" else r.state_label}))"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Current phase",
+      "gridPos": {
+        "x": 4,
+        "y": 3,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^phase_label$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_label\"})"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Current phase goal",
+      "gridPos": {
+        "x": 12,
+        "y": 3,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^phase_goal_label$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_goal_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_goal_label\"})"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Next step",
+      "gridPos": {
+        "x": 18,
+        "y": 3,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^next_phase_label$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"next_phase_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"next_phase_label\"})"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "gauge",
+      "title": "Current phase progress",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "\u2014",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^phase_progress$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_progress\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_progress\"})"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Estimated phase time remaining",
+      "gridPos": {
+        "x": 4,
+        "y": 7,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dtdurations",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^phase_eta_seconds$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_eta_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_eta_seconds\"})"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Estimated phase finish (local time)",
+      "gridPos": {
+        "x": 8,
+        "y": 7,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsLocal",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^phase_eta_unix_ms$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_eta_unix_ms\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_eta_unix_ms\"})"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Remaining bytes in phase",
+      "gridPos": {
+        "x": 16,
+        "y": 7,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^phase_remaining_bytes$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"phase_remaining_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"phase_remaining_bytes\"})"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "gauge",
+      "title": "Filesystem occupancy (target below)",
+      "gridPos": {
+        "x": 20,
+        "y": 7,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "\u2014",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^occupancy$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"occupancy\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"occupancy\"})"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Host writes since phase baseline",
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^run_host_bytes$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"run_host_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"run_host_bytes\"})"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "NAND writes since phase baseline",
+      "gridPos": {
+        "x": 4,
+        "y": 11,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^run_nand_bytes$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"run_nand_bytes\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"run_nand_bytes\"})"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Current phase WAF",
+      "gridPos": {
+        "x": 8,
+        "y": 11,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:x",
+          "noValue": "\u2014",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^waf_run$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"waf_run\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"waf_run\"})"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Completed comparison arms",
+      "gridPos": {
+        "x": 12,
+        "y": 11,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "\u2014",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^completed_arms$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"completed_arms\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"completed_arms\"})"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Comparison byte-goal progress",
+      "gridPos": {
+        "x": 16,
+        "y": 11,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "\u2014",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^comparison_progress$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"comparison_progress\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"comparison_progress\"})"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Result qualification",
+      "gridPos": {
+        "x": 20,
+        "y": 11,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "QUALIFIED": {
+                  "color": "green"
+                },
+                "FAILED": {
+                  "color": "red"
+                },
+                "PENDING \u2014 NO ENDURANCE RESULT": {
+                  "color": "orange"
+                },
+                "PENDING": {
+                  "color": "orange"
+                },
+                "SMOKE \u2014 NOT QUALIFIED": {
+                  "color": "orange"
+                },
+                "Unknown": {
+                  "color": "gray"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^qualification_label$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"qualification_label\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"qualification_label\"})"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Comparison sequence",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field =~ /^arm_[0-9]+_status$/) |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_field\", \"_value\"]) |> rename(columns: {_field: \"Arm\", _value: \"Status\"}) |> sort(columns: [\"Arm\"])",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Campaign memory and hard limit (includes file cache)",
+      "gridPos": {
+        "x": 12,
+        "y": 15,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"telegraf\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\" and (r._field == \"memory_bytes\" or r._field == \"memory_limit_bytes\")) |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Host and NAND write rates",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"telegraf\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\" and (r._field == \"host_bytes_per_second\" or r._field == \"nand_bytes_per_second\")) |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Campaign CPU usage (1.0 = one core)",
+      "gridPos": {
+        "x": 12,
+        "y": 22,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"telegraf\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\" and (r._field == \"cpu_cores\")) |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Occupancy and target",
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"telegraf\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\" and (r._field == \"occupancy\" or r._field == \"occupancy_target\")) |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Phase-cumulative WAF \u2014 baseline resets at each phase",
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:x",
+          "min": 0,
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "from(bucket: \"telegraf\") |> range(start: v.timeRangeStart, stop: v.timeRangeStop) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\" and (r._field == \"waf_run\")) |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Observer health",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "true": {
+                  "text": "OK",
+                  "color": "green"
+                },
+                "false": {
+                  "text": "CHECK",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^observer_ok$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_ok\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"observer_ok\"})"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Fresh, valid source telemetry",
+      "gridPos": {
+        "x": 4,
+        "y": 36,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "true": {
+                  "text": "OK",
+                  "color": "green"
+                },
+                "false": {
+                  "text": "CHECK",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^telemetry_ok$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_ok\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"telemetry_ok\"})"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "type": "stat",
+      "title": "Source sample age",
+      "gridPos": {
+        "x": 8,
+        "y": 36,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "\u2014",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^telemetry_age_seconds$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_age_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"telemetry_age_seconds\"})"
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "type": "stat",
+      "title": "Status feed age",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "\u2014",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^observer_epoch_seconds$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -30d) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"observer_epoch_seconds\"}) |> map(fn: (r) => ({r with observer_epoch_seconds: float(v: uint(v: now())) / 1000000000.0 - r.observer_epoch_seconds}))"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "type": "stat",
+      "title": "Drive temperature",
+      "gridPos": {
+        "x": 16,
+        "y": 36,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^temperature_celsius$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"temperature_celsius\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"temperature_celsius\"})"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "type": "stat",
+      "title": "Campaign elapsed",
+      "gridPos": {
+        "x": 20,
+        "y": 36,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dtdurations",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^campaign_elapsed_seconds$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"campaign_elapsed_seconds\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"campaign_elapsed_seconds\"})"
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "type": "stat",
+      "title": "Unit",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^unit$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"unit\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"unit\"})"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "Telemetry run ID (auto-followed)",
+      "gridPos": {
+        "x": 6,
+        "y": 40,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^telemetry_run_id$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"telemetry_run_id\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"telemetry_run_id\"})"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "Error / stale-data detail",
+      "gridPos": {
+        "x": 14,
+        "y": 40,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^last_error$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"last_error\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"last_error\"})"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "Workload streams",
+      "gridPos": {
+        "x": 20,
+        "y": 40,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "\u2014",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^workload_streams$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"workload_streams\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"workload_streams\"})"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "Current artifact directory",
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 24,
+        "h": 3
+      },
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb-telegraf"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "\u2014"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/^artifact_path$/",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "query": "stamp = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"observer_epoch_seconds\") |> group() |> last() |> keep(columns: [\"_time\"])\nvalue = from(bucket: \"telegraf\") |> range(start: -2m) |> filter(fn: (r) => r._measurement == \"kvbench_campaign\" and r.host == \"dev\" and r.serial == \"2337448A0113\") |> filter(fn: (r) => r._field == \"artifact_path\") |> group()\njoin(tables: {value: value, stamp: stamp}, on: [\"_time\"]) |> keep(columns: [\"_time\", \"_value\"]) |> rename(columns: {_value: \"artifact_path\"})"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "title": "Detailed NVMe WAF",
+      "url": "/d/kvbench-nvme-waf",
+      "type": "link"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+instance_id: hicache-tp8-single-drive
+server:
+  model_profile: llama-3.1-8b
+gpu:
+  tp_size: 8
+scheduler:
+  prefill_tokens_per_second: 10000
+  decode_tokens_per_second: 1000
+kv:
+  stack: hicache
+  active_ranks: [0]
+  max_cpu_memory_gb: 2
+  trace_file: /tmp/kvbench-hicache-trace.jsonl
+  hicache:
+    storage_path: /tmp/kvbench-hicache-cache
+    page_size: 256
+    host_size_gb: 0.25
+    disk_size_gb: 0.5
+    mem_layout: page_first_direct
+    # V1 modeled host policy; L3 file operations/eviction are real SGLang code.
+    write_policy: write_through
+    write_batch_pages: 32

@@ -1,0 +1,27 @@
+# This is an ENDURANCE protocol. Low occupancy fails before workload writes.
+# Use --mode smoke only to validate plumbing; it is always marked unqualified.
+target: /mnt/work/kvbench
+controller: /dev/nvme6
+expected_serial: '2337448A0113'
+artifacts: /mnt/development/wvaske/kvbench-runs
+configs:
+  lmcache: lmcache-drive-server.yaml
+  hicache: hicache-drive-server.yaml
+order: [lmcache, hicache, hicache, lmcache]
+min_occupancy: 0.8
+max_occupancy: 0.95
+precondition_drive_fills: 1
+drive_fills: 3
+min_seconds: 600
+max_seconds: 1209600
+interval_seconds: 5
+block_trace_seconds: 60
+idle_seconds: 60
+drain_seconds: 300
+concurrency: 16
+# Both server configs use timing.full_speed: true; speed up compute rather than
+# multiplying streams, KV geometry or cache quotas.
+prompt_chars: 65536
+output_tokens: 512
+process_memory_bytes: 4294967296
+influx_file: /var/lib/kvbench-nvme/experiment.influx

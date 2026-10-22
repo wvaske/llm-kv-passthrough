@@ -1,0 +1,26 @@
+# Emulate a TP=8 engine, sending only rank 0's KV traffic to the test drive.
+# Run: kvbench serve --config examples/tp8-single-drive.yaml
+# Two ranks: append --kv-ranks 0,7. All ranks: append --kv-ranks all.
+instance_id: tp8-single-drive
+server:
+  model_profile: llama-3.1-8b
+gpu:
+  gpu_profile: H100_SXM
+  tp_size: 8
+timing:
+  pp_size: 1
+scheduler:
+  # Illustrative aggregate TP=8 rates, not divided by active rank count.
+  prefill_tokens_per_second: 10000
+  decode_tokens_per_second: 1000
+  prefill_chunk_tokens: 256
+  max_active_requests: 16
+  max_pending_requests: 64
+kv:
+  active_ranks: [0]
+  # Set local_disk in this LMCache file to a fresh directory on your test drive.
+  # Each active rank gets its own 0.25 GiB CPU / 0.5 GiB disk tier quota.
+  lmcache_config_file: lmcache-local-disk.yaml
+  trace_file: /tmp/kvbench-tp8-single-drive-trace.jsonl
+  max_cpu_memory_gb: 2
+  max_chunk_mb: 256

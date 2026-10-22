@@ -1455,6 +1455,9 @@ docs = [
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
 ]
+hicache = [
+    { name = "torch" },
+]
 lmcache = [
     { name = "lmcache" },
 ]
@@ -1485,11 +1488,12 @@ requires-dist = [
     { name = "rich", specifier = ">=13.7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.14" },
     { name = "structlog", specifier = ">=24.1.0" },
+    { name = "torch", marker = "extra == 'hicache'", specifier = ">=2.9" },
     { name = "typer", specifier = ">=0.9.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
 ]
-provides-extras = ["lmcache", "dev", "docs", "all"]
+provides-extras = ["lmcache", "hicache", "dev", "docs", "all"]
 
 [[package]]
 name = "librt"

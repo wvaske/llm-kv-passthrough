@@ -213,7 +213,7 @@ class RateServer:
         if isinstance(exc, TimeoutError):
             return ErrorResponse.create("Request timed out", "timeout_error", "504")
         logger.exception("KV serving request failed")
-        return ErrorResponse.create(str(exc), "server_error", "500")
+        return ErrorResponse.create(str(exc) or type(exc).__name__, "server_error", "500")
 
     async def chat_completions(self, request: ChatCompletionRequest) -> ChatCompletionResponse | ErrorResponse:
         result = RequestResult()

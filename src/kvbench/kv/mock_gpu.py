@@ -14,11 +14,14 @@ import torch
 from lmcache.v1.gpu_connector.gpu_connectors import GPUConnectorInterface
 from lmcache.v1.memory_management import MemoryFormat, MemoryObj
 
+from kvbench.core.payload import PayloadGenerator, fill_sfc64
+
 
 class MockGPUConnector(GPUConnectorInterface):  # type: ignore[misc]  # LMCache's optional interface is untyped
     def __init__(self, num_layers: int, hidden_dim: int, dtype: torch.dtype,
                  random_fill: bool = True, seed: int = 24301, rank: int = 0,
-                 namespace: str = "kvbench"):
+                 namespace: str = "kvbench", planes: int = 2,
+                 payload_generator: PayloadGenerator = "torch"):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
         self.dtype = dtype
@@ -26,6 +29,8 @@ class MockGPUConnector(GPUConnectorInterface):  # type: ignore[misc]  # LMCache'
         self.seed = seed
         self.rank = rank
         self.namespace = namespace
+        self.planes = planes
+        self.payload_generator = payload_generator
 
     def from_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs: Any) -> None:  # noqa: ARG002 - LMCache interface
         flat = memory_obj.tensor.view(torch.uint8).reshape(-1)
@@ -38,8 +43,13 @@ class MockGPUConnector(GPUConnectorInterface):  # type: ignore[misc]  # LMCache'
         # Mix rank into all bits: the CPU generator may only consume the low
         # 32 seed bits, so XORing rank << 32 would duplicate payloads.
         seed = int.from_bytes(digest, "little") & (2**63 - 1)
-        generator = torch.Generator().manual_seed(seed)
-        flat.random_(0, 256, generator=generator)
+        if self.payload_generator == "sfc64":
+            import numpy as np
+
+            fill_sfc64(flat.numpy(), np.random.SFC64(seed))
+        else:
+            generator = torch.Generator().manual_seed(seed)
+            flat.random_(0, 256, generator=generator)
 
     def to_gpu(self, memory_obj: MemoryObj, start: int, end: int, **kwargs: Any) -> None:  # noqa: ARG002 - no final device copy in V1
         # LMCache fetched/owns the real payload. V1 measures no GPU transfer.
@@ -53,7 +63,7 @@ class MockGPUConnector(GPUConnectorInterface):  # type: ignore[misc]  # LMCache'
         return None
 
     def get_shape(self, num_tokens: int) -> torch.Size:
-        return torch.Size([2, self.num_layers, num_tokens, self.hidden_dim])
+        return torch.Size([self.planes, self.num_layers, num_tokens, self.hidden_dim])
 
     def get_dtype(self) -> torch.dtype:
         return self.dtype

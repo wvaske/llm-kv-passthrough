@@ -151,6 +151,9 @@ class KVBenchApp:
                 # Some LMCache defaults are infinite thresholds. Preserve them
                 # as explicit strings rather than emitting invalid JSON floats.
                 result["lmcache"] = json.loads(json.dumps(cfg.to_dict(), default=str), parse_constant=str)
+            provenance = getattr(self._kv, "provenance", None)
+            if provenance is not None:
+                result["hicache"] = provenance()
             return result
 
         @self.app.get("/kvbench/state")
@@ -162,6 +165,14 @@ class KVBenchApp:
             return {"capacity": kv.capacity_info(), "usage": kv.usage_info(),
                     "kv_stats": {**asdict(kv.stats), "token_hit_rate": kv.stats.token_hit_rate},
                     "scheduler": server.scheduler.info()}
+
+        @self.app.post("/kvbench/flush")
+        async def flush() -> dict[str, bool]:
+            server = self._require_server()
+            if server.scheduler.active or server.scheduler.pending or self._require_warmup().running:
+                raise HTTPException(409, "Stop serving and warmup before draining storage")
+            await self._require_kv().flush()
+            return {"drained": True, "fsync": False}
 
         @self.app.get("/v1/models")
         async def models() -> ModelList:

@@ -1,5 +1,9 @@
 # Profiles and fidelity levels
 
+For current DeepSeek, Qwen, GLM and Kimi releases, see the
+[researched catalog and byte formulas](model-catalog.md). Component layouts
+separate compressed/shared KV, sparse index keys and fixed recurrent state.
+
 V1 performance is defined by explicit aggregate prefill/decode rates. GPU peak
 specifications do **not** change those rates automatically. Hardware-dependent
 coupled costs, real framework schedulers, HBM admission and preemption belong to
@@ -50,14 +54,17 @@ represents its bytes as two halves; native MLA layout interoperability is not
 claimed. Constant-size recurrent state is not part of V1 storage traffic.
 
 TP divides KV heads, or replicates heads when TP is a multiple of the number of
-heads. PP divides cache-bearing layers, distributing a remainder across early
-stages. The resulting rank geometry is included in the manifest. The manager's
+heads. Homogeneous legacy profiles distribute cache-bearing layers across PP;
+component profiles partition physical backbone layers and count their actual
+buffer owners. The resulting rank geometry is included in the manifest. The manager's
 cache namespace includes model-definition and rank-layout identity.
 
 `dtype` and `kv_dtype` are independent. `params_billions_override` is an active
 compute estimate, while `total_params_billions` describes total weight capacity.
-Neither drives V1 rates. Bundled profile estimates were inherited from earlier
-experiments; inspect/override their geometry for the deployment under test.
+Neither drives V1 rates. Older legacy profile estimates were inherited from
+earlier experiments; the researched current-family entries carry pinned source
+revisions and explicit cache formats. Inspect/override geometry for the actual
+deployment under test.
 
 ## Historical analytical utilities
 

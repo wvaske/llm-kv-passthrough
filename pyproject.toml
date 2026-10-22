@@ -45,6 +45,9 @@ dependencies = [
 lmcache = [
     "lmcache==0.5.4",
 ]
+# Install the pinned SGLang source wheel separately with --no-deps, as described
+# in docs/architecture/hicache.md. Its GPU dependency set is not needed for L3.
+hicache = ["torch>=2.9"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -81,6 +84,10 @@ packages = ["src/kvbench"]
 include = [
     "/src",
     "/tests",
+    "/examples",
+    "/docs",
+    "/scripts",
+    "/deployment/monitoring",
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",

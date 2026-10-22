@@ -99,11 +99,11 @@ class KVBenchCollector(Collector):
             yield kv_tokens
 
             yield CounterMetricFamily(
-                "kvbench_kv_submitted_store_bytes_total", "Payload bytes submitted across all KV ranks (not durability)",
+                "kvbench_kv_submitted_store_bytes_total", "Payload bytes submitted across active KV ranks only (not durability or extrapolation)",
                 value=kv_stats.submitted_store_bytes,
             )
             yield CounterMetricFamily(
-                "kvbench_kv_retrieved_bytes_total", "Successfully retrieved prefix payload bytes across all ranks",
+                "kvbench_kv_retrieved_bytes_total", "Successfully retrieved prefix payload bytes across active KV ranks only",
                 value=kv_stats.retrieved_bytes,
             )
 
@@ -147,12 +147,25 @@ class KVBenchCollector(Collector):
             if capacity:
                 cap = GaugeMetricFamily(
                     "kvbench_kv_tier_capacity_bytes",
-                    "Configured tier capacity",
+                    "Configured tier capacity across active KV ranks only",
                     labels=["tier"],
                 )
                 cap.add_metric(["local_cpu"], capacity["local_cpu_capacity_bytes"])
                 cap.add_metric(["local_disk"], capacity["local_disk_capacity_bytes"])
                 yield cap
+                if "modeled_rank_count" in capacity:
+                    ranks = GaugeMetricFamily(
+                        "kvbench_kv_rank_count", "Modeled topology versus instantiated KV ranks", labels=["scope"]
+                    )
+                    ranks.add_metric(["modeled"], capacity["modeled_rank_count"])
+                    ranks.add_metric(["active"], capacity["active_rank_count"])
+                    yield ranks
+                    active = GaugeMetricFamily(
+                        "kvbench_kv_rank_active", "1 for an instantiated logical KV rank, 0 for an omitted rank", labels=["rank"]
+                    )
+                    for rank in capacity["ranks"]:
+                        active.add_metric([str(rank["rank"])], int(rank["active"]))
+                    yield active
 
         recorder = getattr(kv, "trace_recorder", None)
         counters = getattr(recorder, "counters", None)

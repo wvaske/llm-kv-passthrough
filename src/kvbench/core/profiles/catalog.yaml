@@ -39,17 +39,379 @@ models:
   llama-3.2-3b: {name: Llama 3.2 3B, layers: 28, hidden: 3072, kv_heads: 8, num_heads: 24, intermediate: 8192}
   llama-4-scout: {name: Llama 4 Scout 17B-16E, layers: 48, hidden: 5120, kv_heads: 8, num_heads: 40, intermediate: 16384, vocab_size: 202048, max_seq_len: 10485760, params_billions_override: 17, total_params_billions: 109}
   deepseek-v3.2: {name: DeepSeek V3.2 (MLA byte geometry), layers: 61, hidden: 7168, kv_heads: 1, num_heads: 128, head_dim_override: 192, kv_latent_dim: 576, intermediate: 18432, vocab_size: 129280, max_seq_len: 163840, params_billions_override: 37, total_params_billions: 671}
-  qwen3.8-27b: {name: Qwen3.8 27B, layers: 64, kv_layers: 16, hidden: 5120, kv_heads: 4, num_heads: 24, head_dim_override: 256, intermediate: 17408, vocab_size: 248320, max_seq_len: 262144}
+  qwen3.8-27b:
+    name: Qwen3.8 27B (hybrid GDN/GQA)
+    layers: 64
+    hidden: 5120
+    kv_heads: 4
+    num_heads: 24
+    head_dim_override: 256
+    intermediate: 17408
+    vocab_size: 248320
+    max_seq_len: 262144
+    params_billions_override: 27
+    total_params_billions: 27
+    source_repo: Qwen/Qwen3.8-27B
+    source_revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/Qwen/Qwen3.8-27B/blob/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/config.json
+      - &mamba_shapes https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/configs/mamba_utils.py
+    cache_notes: >-
+      BF16 main KV reference; only 16 GQA layers grow with tokens. GDN matrices
+      are FP32 and convolution history is BF16 with kernel-1=3 slots (SGLang).
+      Fixed state is reported but not offloaded by the classic V1 adapter.
+    cache_components:
+      - {name: gqa_kv, layer_ids: [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63], heads: 4, elements_per_head: 512, bits: 16, partition: kv_heads}
+      - name: gdn_matrix
+        layer_ids: &qwen27_linear [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62]
+        heads: 48
+        elements_per_head: 16384  # 128 x 128
+        bits: 32
+        partition: sharded
+        scope: fixed
+        export: false
+      - {name: gdn_qk_conv, layer_ids: *qwen27_linear, heads: 16, elements_per_head: 768, bits: 16, partition: sharded, scope: fixed, export: false}
+      - {name: gdn_v_conv, layer_ids: *qwen27_linear, heads: 48, elements_per_head: 384, bits: 16, partition: sharded, scope: fixed, export: false}
   gpt-oss-120b: {name: GPT-OSS 120B (5.1B active), layers: 36, hidden: 2880, kv_heads: 8, num_heads: 64, head_dim_override: 64, intermediate: 2880, vocab_size: 201088, dtype: fp8, kv_dtype: bf16, params_billions_override: 5.1, total_params_billions: 116.8}
   gpt-oss-20b: {name: GPT-OSS 20B (3.6B active), layers: 24, hidden: 2880, kv_heads: 8, num_heads: 64, head_dim_override: 64, intermediate: 2880, vocab_size: 201088, params_billions_override: 3.6, total_params_billions: 20.9}
   qwen-2.5-7b: {name: Qwen 2.5 7B, layers: 28, hidden: 3584, kv_heads: 4, num_heads: 28, intermediate: 18944, vocab_size: 152064}
   qwen-2.5-72b: {name: Qwen 2.5 72B, layers: 80, hidden: 8192, kv_heads: 8, num_heads: 64, intermediate: 29568, vocab_size: 152064}
   mistral-7b: {name: Mistral 7B, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, vocab_size: 32000, max_seq_len: 32768}
   mixtral-8x7b: {name: Mixtral 8x7B, layers: 32, hidden: 4096, kv_heads: 8, num_heads: 32, intermediate: 14336, vocab_size: 32000, max_seq_len: 32768, params_billions_override: 12.9, total_params_billions: 46.7}
+
+  # Latest publicly released text backbones researched on 2026-09-29.
+  # Components describe explicit serving cache formats, NOT weight bit widths.
+  # Owner layer indices below are zero-based and exclude draft/MTP/vision layers.
+  deepseek-v4-pro-0813:
+    name: DeepSeek V4 Pro 0813 (uniform FP8 reference)
+    layers: 61
+    hidden: 7168
+    kv_heads: 1
+    num_heads: 128
+    head_dim_override: 512
+    intermediate: 3072
+    vocab_size: 129280
+    max_seq_len: 1048576
+    dtype: fp8
+    params_billions_override: 49
+    total_params_billions: 1600
+    weight_format: FP8 dense / FP4 experts
+    source_repo: deepseek-ai/DeepSeek-V4-Pro-0813
+    source_revision: 72e1d3230f6c080a530b0a1d46f8eb4602340597
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813/blob/72e1d3230f6c080a530b0a1d46f8eb4602340597/config.json
+      - https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813/blob/72e1d3230f6c080a530b0a1d46f8eb4602340597/README.md
+      - &dsv4_pool https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py
+    cache_notes: >-
+      Explicit SGLang TRT-LLM uniform-FP8 (512 B/latent) + FP4 index-K reference,
+      NOT the FlashMLA 584-byte mixed FP8/BF16 row/page layout. Thirty CSA layers
+      compress 4:1 and 31 HCA layers compress 128:1; only CSA needs index-K.
+      Growing cache is exported; SWA checkpoints/replay and compression
+      accumulators are not offloaded. Accumulator state is implementation-
+      dependent and not included in the reported accounted resident footprint.
+    cache_components:
+      - {name: csa_kv, layer_ids: &dsv4_pro_csa [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60], elements_per_head: 512, bits: 8, tokens_per_entry: 4}
+      - {name: hca_kv, layer_ids: [0, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59], elements_per_head: 512, bits: 8, tokens_per_entry: 128}
+      - {name: csa_index_k, layer_ids: *dsv4_pro_csa, elements_per_head: 128, bits: 4, quant_group_size: 32, scale_bytes: 1, tokens_per_entry: 4}
+      - {name: sliding_window_kv, layer_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60], elements_per_head: 512, bits: 8, scope: window, window_tokens: 128, export: false}
+
+  deepseek-v4-flash-0731:
+    name: DeepSeek V4 Flash 0731 (uniform FP8 reference)
+    layers: 43
+    hidden: 4096
+    kv_heads: 1
+    num_heads: 64
+    head_dim_override: 512
+    intermediate: 2048
+    vocab_size: 129280
+    max_seq_len: 1048576
+    dtype: fp8
+    params_billions_override: 13
+    total_params_billions: 284
+    weight_format: FP8 dense / FP4 experts
+    source_repo: deepseek-ai/DeepSeek-V4-Flash-0731
+    source_revision: 7872f01b1d1fe23eabc4c98b48bffcef5a386062
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/blob/7872f01b1d1fe23eabc4c98b48bffcef5a386062/config.json
+      - *dsv4_pool
+    cache_notes: >-
+      Previous Flash release retained to compare V4 and V4.1. Explicit uniform
+      FP8 512-byte KV + FP4 index-K reference, not FlashMLA's 584-byte rows.
+      First two layers are SWA-only; 21 CSA and 20 HCA owners grow with context.
+      V1 exports growing buffers only. Compression accumulators and SWA
+      checkpoint traffic are excluded, not claimed to be zero in real serving.
+    cache_components:
+      - {name: csa_kv, layer_ids: &dsv4_flash_csa [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42], elements_per_head: 512, bits: 8, tokens_per_entry: 4}
+      - {name: hca_kv, layer_ids: [3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41], elements_per_head: 512, bits: 8, tokens_per_entry: 128}
+      - {name: csa_index_k, layer_ids: *dsv4_flash_csa, elements_per_head: 128, bits: 4, quant_group_size: 32, scale_bytes: 1, tokens_per_entry: 4}
+      - {name: sliding_window_kv, layer_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42], elements_per_head: 512, bits: 8, scope: window, window_tokens: 128, export: false}
+
+  deepseek-v4.1-flash:
+    name: DeepSeek V4.1 Flash (CSA2 FP4 global KV)
+    layers: 40
+    hidden: 5120
+    kv_heads: 1
+    num_heads: 64
+    head_dim_override: 512
+    intermediate: 2304
+    vocab_size: 129280
+    max_seq_len: 1048576
+    dtype: fp8
+    params_billions_override: 16  # Decode active; prefill is 8B. V1 rates are explicit.
+    total_params_billions: 748   # Rounded: 552B backbone + 196B Engram; excludes vision/draft.
+    weight_format: FP8 dense / FP4 experts; independent FP4 main-KV and index-K encoding
+    cache_pp_supported: false
+    source_repo: deepseek-ai/DeepSeek-V4.1-Flash
+    source_revision: dba1be0a40aa45a94ad051997016db3960a90277
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/config.json
+      - https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/README.md
+      - https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/inference/model.py
+    cache_notes: >-
+      Global KV is (3/2+1) x (512/2+512/16+128/2+128/32) = 890 B/token.
+      Only layers 2,8,14,20 OWN KV/index-K; the other index-source layers only
+      reindex/reuse. SWA is bounded to 128 tokens and excluded from persistence
+      under the published SWA bounded-replay policy. Replay compute, Engram,
+      DSpark, vision and allocator padding are not modeled. PP>1 is rejected
+      because cross-stage shared-cache ownership/transfer is not implemented.
+    cache_components:
+      - {name: encoder_main_kv, layer_ids: &ds41_encoder [2, 8, 14], elements_per_head: 512, bits: 4, quant_group_size: 16, scale_bytes: 1, tokens_per_entry: 2, notes: 'E2M1 payload + E4M3 scales'}
+      - {name: encoder_index_k, layer_ids: *ds41_encoder, elements_per_head: 128, bits: 4, quant_group_size: 32, scale_bytes: 1, tokens_per_entry: 2, notes: 'E2M1 payload + E8M0 scales; key shared with reindex layers'}
+      - {name: decoder_main_kv, layer_ids: [20], elements_per_head: 512, bits: 4, quant_group_size: 16, scale_bytes: 1}
+      - {name: decoder_index_k, layer_ids: [20], elements_per_head: 128, bits: 4, quant_group_size: 32, scale_bytes: 1}
+      - name: sliding_window_kv
+        layer_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+        elements_per_head: 512
+        bits: 8
+        quant_group_size: 32
+        scale_bytes: 1
+        scope: window
+        window_tokens: 128
+        export: false
+      - {name: pending_compressor_kv_scores, layer_ids: *ds41_encoder, elements_per_head: 2048, bits: 32, scope: fixed, export: false, notes: '2 arrays x 2 pending tokens x 512 dimensions'}
+
+  qwen3.8-flash-next:
+    name: Qwen3.8 Flash Next (GDN + QSA)
+    layers: 48
+    hidden: 2560
+    kv_heads: 2
+    num_heads: 24
+    head_dim_override: 256
+    intermediate: 640
+    vocab_size: 248320
+    max_seq_len: 262144
+    params_billions_override: 6
+    total_params_billions: 176  # 125B backbone + 51B n-gram; excludes 4B MTP.
+    source_repo: Qwen/Qwen3.8-Flash-Next
+    source_revision: de4b8e4d43b917e7706784d8bb445c9af86a3540
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json
+      - &qsa_pool https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/mem_cache/qsa_kv_pool.py
+      - *mamba_shapes
+    cache_notes: >-
+      SGLang optimized reference: BF16 GQA KV and BF16 pooled index-K. Only the
+      indexer is compressed 4:1, NOT the main GQA KV. Top-k=2048 is a compute
+      selection budget, not a cache-capacity bound. Native HF reference caches
+      raw index keys instead; its footprint differs. Native context is 256K;
+      the API's 1M context is not assumed for this checkpoint.
+    cache_components:
+      - {name: gqa_kv, layer_ids: &qwen_flash_full [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47], heads: 2, elements_per_head: 512, bits: 16, partition: kv_heads}
+      - {name: qsa_index_k, layer_ids: *qwen_flash_full, elements_per_head: 128, bits: 16, tokens_per_entry: 4}
+      - name: gdn_matrix
+        layer_ids: &qwen_flash_linear [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46]
+        heads: 48
+        elements_per_head: 16384
+        bits: 32
+        partition: sharded
+        scope: fixed
+        export: false
+      - {name: gdn_qk_conv, layer_ids: *qwen_flash_linear, heads: 16, elements_per_head: 768, bits: 16, partition: sharded, scope: fixed, export: false}
+      - {name: gdn_v_conv, layer_ids: *qwen_flash_linear, heads: 48, elements_per_head: 384, bits: 16, partition: sharded, scope: fixed, export: false}
+      - {name: qsa_pending_keys, layer_ids: *qwen_flash_full, elements_per_head: 512, bits: 16, scope: fixed, export: false}
+      - {name: qsa_pending_positions, layer_ids: [3], elements_per_head: 12, bits: 64, scope: fixed, export: false, notes: 'One shared 4 x 3 position ring, not one per layer'}
+
+  qwen3.8-2.4t-a95b:
+    name: Qwen3.8 2.4T-A95B (open Max-class backbone)
+    layers: 92
+    hidden: 8192
+    kv_heads: 4
+    num_heads: 64
+    head_dim_override: 256
+    intermediate: 2048
+    vocab_size: 248320
+    max_seq_len: 262144
+    params_billions_override: 95
+    total_params_billions: 2400
+    source_repo: Qwen/Qwen3.8-2.4T-A95B
+    source_revision: 207bd685a7e3696cfaff12ded7c6a7ea0f88c996
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/blob/207bd685a7e3696cfaff12ded7c6a7ea0f88c996/config.json
+      - https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/blob/207bd685a7e3696cfaff12ded7c6a7ea0f88c996/README.md
+      - *mamba_shapes
+    cache_notes: '23 GQA + 69 GDN layers; BF16 growing KV and FP32 recurrent matrices. Do not infer KV size from 2.4T weights. Native open-checkpoint context is 262144.'
+    cache_components:
+      - {name: gqa_kv, layer_ids: [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63, 67, 71, 75, 79, 83, 87, 91], heads: 4, elements_per_head: 512, bits: 16, partition: kv_heads}
+      - name: gdn_matrix
+        layer_ids: &qwen_max_linear [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62, 64, 65, 66, 68, 69, 70, 72, 73, 74, 76, 77, 78, 80, 81, 82, 84, 85, 86, 88, 89, 90]
+        heads: 128
+        elements_per_head: 16384
+        bits: 32
+        partition: sharded
+        scope: fixed
+        export: false
+      - {name: gdn_qk_conv, layer_ids: *qwen_max_linear, heads: 16, elements_per_head: 768, bits: 16, partition: sharded, scope: fixed, export: false}
+      - {name: gdn_v_conv, layer_ids: *qwen_max_linear, heads: 128, elements_per_head: 384, bits: 16, partition: sharded, scope: fixed, export: false}
+
+  glm-5.3:
+    name: GLM-5.3 (MLA + IndexShare)
+    layers: 78
+    hidden: 6144
+    kv_heads: 64
+    num_heads: 64
+    head_dim_override: 256  # qk_nope 192 + qk_rope 64; independent of cached latent.
+    intermediate: 2048
+    vocab_size: 154880
+    max_seq_len: 1048576
+    dtype: fp8
+    params_billions_override: 40
+    total_params_billions: 744
+    weight_format: FP8 checkpoint; reference cache is BF16 MLA plus FP8 index-K with FP32 scales
+    source_repo: zai-org/GLM-5.3
+    source_revision: aca966e4e02791568aa6a4ced368624b3d897f42
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/zai-org/GLM-5.3/blob/aca966e4e02791568aa6a4ced368624b3d897f42/config.json
+      - &dsa_pool https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/mem_cache/memory_pool.py
+      - https://github.com/zai-org/GLM-5
+    cache_notes: >-
+      Every backbone layer keeps a 512+64-element absorbed MLA latent, not 64
+      full KV heads. IndexShare shares top-k decisions; it does NOT share main
+      MLA KV between layers. Only the 21 'full' indexers own index-K caches.
+      FP8 weights do not imply FP8 main KV. Draft/MTP is excluded.
+    cache_components:
+      - {name: mla_kv, layer_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77], elements_per_head: 576, bits: 16}
+      - {name: dsa_index_k, layer_ids: [0, 1, 2, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62, 66, 70, 74], elements_per_head: 128, bits: 8, quant_group_size: 128, scale_bytes: 4}
+
+  glm-5.3-flash:
+    name: GLM-5.3 Flash (KDA + NoPE MLA/DSA)
+    layers: 45
+    hidden: 4096
+    kv_heads: 64
+    num_heads: 64
+    head_dim_override: 256
+    intermediate: 2048
+    vocab_size: 154880
+    max_seq_len: 1048576
+    dtype: fp8
+    params_billions_override: 18
+    total_params_billions: 320
+    weight_format: FP8 checkpoint; main KV reference BF16, compressed index-K FP8 plus FP32 scales
+    source_repo: zai-org/GLM-5.3-Flash
+    source_revision: eb9eb208eb0d988989d07a6a12d0fdeb5f52574a
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/zai-org/GLM-5.3-Flash/blob/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a/config.json
+      - *dsa_pool
+      - *mamba_shapes
+    cache_notes: >-
+      34 KDA + 11 DSA layers. qk_rope_head_dim=0, so the main latent is 512,
+      not 576. The 4:1 k-pool compression applies to the indexer, not MLA KV.
+      The SGLang indexer stores 128 FP8 values + one FP32 scale per pooled row;
+      BF16 pending key/score rings are fixed per request. No speculation buffers.
+    cache_components:
+      - {name: mla_kv, layer_ids: &glm_flash_full [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43], elements_per_head: 512, bits: 16}
+      - {name: dsa_pooled_index_k, layer_ids: *glm_flash_full, elements_per_head: 128, bits: 8, quant_group_size: 128, scale_bytes: 4, tokens_per_entry: 4}
+      - name: kda_matrix
+        layer_ids: &glm_flash_linear [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44]
+        heads: 64
+        elements_per_head: 16384
+        bits: 32
+        partition: sharded
+        scope: fixed
+        export: false
+      - {name: kda_qkv_conv, layer_ids: *glm_flash_linear, heads: 64, elements_per_head: 1152, bits: 16, partition: sharded, scope: fixed, export: false}
+      - {name: index_pending_key_scores, layer_ids: *glm_flash_full, elements_per_head: 1024, bits: 16, scope: fixed, export: false, notes: '2 arrays x 4 slots x 128; no speculative tail slots'}
+
+  kimi-k3:
+    name: Kimi K3 (69 KDA + 24 gated MLA)
+    layers: 93
+    hidden: 7168
+    kv_heads: 96
+    num_heads: 96
+    head_dim_override: 192
+    intermediate: 3072
+    vocab_size: 163840
+    max_seq_len: 1048576
+    params_billions_override: 104
+    total_params_billions: 2800
+    weight_format: MXFP4 routed weights / MXFP8 activations; independent BF16 MLA and FP32 KDA state
+    source_repo: moonshotai/Kimi-K3
+    source_revision: f831ab66814297da540d832a5235f8e904f29d06
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/moonshotai/Kimi-K3/blob/f831ab66814297da540d832a5235f8e904f29d06/config.json
+      - https://huggingface.co/moonshotai/Kimi-K3/blob/f831ab66814297da540d832a5235f8e904f29d06/modeling_kimi_linear.py
+      - https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/models/kimi_k3.py
+      - *mamba_shapes
+    cache_notes: >-
+      Optimized absorbed-MLA reference, not HF's expanded K/V tensors. NoPE
+      disables RoPE application but does NOT discard the configured 64-element
+      shared key projection: cached latent is 512+64. Official KDA/full layer
+      lists are one-based; these owner lists are converted to zero-based.
+      The last two layers are both MLA, so physical PP partition is nonuniform.
+    cache_components:
+      - {name: mla_kv, layer_ids: [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63, 67, 71, 75, 79, 83, 87, 91, 92], elements_per_head: 576, bits: 16}
+      - name: kda_matrix
+        layer_ids: &kimi3_linear [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62, 64, 65, 66, 68, 69, 70, 72, 73, 74, 76, 77, 78, 80, 81, 82, 84, 85, 86, 88, 89, 90]
+        heads: 96
+        elements_per_head: 16384
+        bits: 32
+        partition: sharded
+        scope: fixed
+        export: false
+      - {name: kda_qkv_conv, layer_ids: *kimi3_linear, heads: 96, elements_per_head: 1152, bits: 16, partition: sharded, scope: fixed, export: false}
+
+  kimi-linear-48b-a3b:
+    name: Kimi Linear 48B-A3B Instruct (KDA/MLA reference)
+    layers: 27
+    hidden: 2304
+    kv_heads: 32
+    num_heads: 32
+    head_dim_override: 192
+    intermediate: 1024
+    vocab_size: 163840
+    max_seq_len: 1048576
+    params_billions_override: 3
+    total_params_billions: 48
+    source_repo: moonshotai/Kimi-Linear-48B-A3B-Instruct
+    source_revision: e1df551a447157d4658b573f9a695d57658590e9
+    verified_on: '2026-09-29'
+    source_urls:
+      - https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct/blob/e1df551a447157d4658b573f9a695d57658590e9/config.json
+      - https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/models/kimi_linear.py
+      - *mamba_shapes
+    cache_notes: 'Latest separate Kimi Linear research checkpoint, not newer than K3. Seven MLA layers (not a rounded 27/4); 20 KDA layers. Absorbed latent remains 512+64 with NoPE.'
+    cache_components:
+      - {name: mla_kv, layer_ids: [3, 7, 11, 15, 19, 23, 26], elements_per_head: 576, bits: 16}
+      - name: kda_matrix
+        layer_ids: &kimi_linear [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25]
+        heads: 32
+        elements_per_head: 16384
+        bits: 32
+        partition: sharded
+        scope: fixed
+        export: false
+      - {name: kda_qkv_conv, layer_ids: *kimi_linear, heads: 32, elements_per_head: 1152, bits: 16, partition: sharded, scope: fixed, export: false}
+
+  # ---- Additional profiles (byte-geometry stand-ins) ----
   deepseek-r1-distill-32b: {name: DeepSeek-R1-Distill-Qwen 32B, layers: 64, hidden: 5120, kv_heads: 8, num_heads: 40, intermediate: 27648, vocab_size: 152064, max_seq_len: 131072}
   qwen3-30b-a3b: {name: Qwen3 30B-A3B (3.3B active), layers: 48, hidden: 2048, kv_heads: 4, num_heads: 32, head_dim_override: 128, intermediate: 6144, vocab_size: 151936, max_seq_len: 262144, params_billions_override: 3.3, total_params_billions: 30.5}
   # DeepSeek V4 (hybrid CSA m=4 / HCA m=128, shared K=V MQA, head_dim 512 stored FP8 + BF16 RoPE = 576 B/entry, CSA indexer key 64 B/entry; compress_ratio-0 layers are sliding-window only, not cached). Byte geometry: kv_layers = CSA layers, kv_latent_dim 164 fp8 ~= 576/4 + 64/4 per CSA layer plus the HCA share. Not real V4 tensors.
   deepseek-v4-pro: {name: DeepSeek V4 Pro (CSA/HCA byte geometry), layers: 61, kv_layers: 29, hidden: 7168, kv_heads: 1, num_heads: 128, head_dim_override: 512, kv_latent_dim: 164, kv_dtype: fp8, intermediate: 3072, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 49, total_params_billions: 1600}
   deepseek-v4-flash: {name: DeepSeek V4 Flash (CSA/HCA byte geometry), layers: 43, kv_layers: 20, hidden: 4096, kv_heads: 1, num_heads: 64, head_dim_override: 512, kv_latent_dim: 164, kv_dtype: fp8, intermediate: 2048, vocab_size: 129280, max_seq_len: 1048576, params_billions_override: 13, total_params_billions: 284}
-  # GLM-5.3 (glm_moe_dsa: MLA kv_lora_rank 512 + qk_rope 64 = 576 latent, 78 layers; same convention as deepseek-v3.2 above)
-  glm-5.3: {name: GLM-5.3 (MLA byte geometry), layers: 78, hidden: 6144, kv_heads: 1, num_heads: 64, head_dim_override: 192, kv_latent_dim: 576, intermediate: 2048, vocab_size: 154880, max_seq_len: 1048576, params_billions_override: 39, total_params_billions: 743}

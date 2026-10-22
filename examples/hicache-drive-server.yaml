@@ -1,0 +1,25 @@
+server:
+  model_profile: llama-3.1-8b
+gpu:
+  gpu_profile: B300_SXM
+  tp_size: 8
+timing:
+  full_speed: true
+scheduler:
+  # Match the LMCache arm: same fast-system operating point and admission limits.
+  prefill_tokens_per_second: 200000
+  decode_tokens_per_second: 20000
+  prefill_chunk_tokens: 8192
+  max_active_requests: 32
+kv:
+  stack: hicache
+  active_ranks: [0]
+  payload_generator: sfc64
+  max_cpu_memory_gb: 2
+  hicache:
+    storage_path: /mnt/work/kvbench/endurance-placeholder
+    page_size: 256
+    host_size_gb: 0.25
+    disk_size_gb: 64
+    mem_layout: page_first_direct
+    write_policy: write_through

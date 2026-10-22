@@ -1,0 +1,19 @@
+[Unit]
+Description=KV-Bench read-only NVMe host/NAND write telemetry
+After=network-online.target
+
+[Service]
+Type=simple
+User=wvaske
+WorkingDirectory=/mnt/development/wvaske/llm-kv-passthrough
+Environment=MALLOC_ARENA_MAX=2
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/mnt/development/wvaske/llm-kv-passthrough/.venv/bin/python -m kvbench.benchmark.nvme --device /dev/nvme6 --expected-serial 2337448A0113 --mount /mnt/work --sudo --interval 5 --output /var/lib/kvbench-nvme/samples.jsonl --influx-file /var/lib/kvbench-nvme/latest.influx
+Restart=on-failure
+RestartSec=10
+MemoryMax=256M
+CPUQuota=20%
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

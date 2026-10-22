@@ -40,8 +40,10 @@ nav:
   - Architecture:
     - Overview: architecture/overview.md
     - GPU Emulation: architecture/gpu-emulation.md
+    - Researched Model Catalog: architecture/model-catalog.md
     - Storage Backends: architecture/storage.md
     - KV Connectors: architecture/connectors.md
+    - HiCache Comparison: architecture/hicache.md
   - Deployment:
     - Docker: deployment/docker.md
     - Ansible: deployment/ansible.md
@@ -50,6 +52,8 @@ nav:
   - Benchmarking:
     - GenAI-Perf: benchmarking/genai-perf.md
     - LMCache Integration: benchmarking/lmcache.md
+    - Single-Drive WAF: benchmarking/drive-waf.md
+    - Active NVMe Campaign: benchmarking/active-campaign.md
   - V1 Plan: V1_PLAN.md
 
 plugins:

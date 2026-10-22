@@ -19,6 +19,7 @@ from kvbench.core import (
     list_gpu_profiles,
     list_model_profiles,
 )
+from kvbench.core.ranks import parse_active_ranks, resolve_active_ranks
 
 app = typer.Typer(
     name="kvbench",
@@ -35,6 +36,8 @@ def serve(
     model: str | None = typer.Option(None, "--model", "-m", help="Model profile to emulate"),
     gpu: str | None = typer.Option(None, "--gpu", "-g", help="Hardware profile label (V1 rates are configured separately)"),
     profiles: str | None = typer.Option(None, "--profiles", help="YAML GPU/model catalog overrides"),
+    kv_stack: str | None = typer.Option(None, "--kv-stack", help="KV adapter: lmcache or hicache (SGLang HiCacheFile)"),
+    hicache_path: str | None = typer.Option(None, "--hicache-path", help="HiCache file storage directory"),
     prefill_tps: float | None = typer.Option(None, "--prefill-tps", help="Aggregate prefill tokens/s for this engine"),
     decode_tps: float | None = typer.Option(None, "--decode-tps", help="Aggregate decode tokens/s for this engine"),
     max_active: int | None = typer.Option(None, "--max-active", help="Maximum active requests"),
@@ -66,6 +69,9 @@ def serve(
     ),
     pp_size: int | None = typer.Option(
         None, "--pp-size", help="Pipeline parallelism size for the emulated GPUs"
+    ),
+    kv_ranks: str | None = typer.Option(
+        None, "--kv-ranks", help="LMCache ranks to run, e.g. 0 or 0,7; 'all' restores every rank. TP/PP sizing and rates are unchanged"
     ),
     simple_timing: bool | None = typer.Option(
         None,
@@ -210,15 +216,24 @@ def serve(
     }
     if timing_updates:
         updates["timing"] = cfg.timing.model_copy(update=timing_updates)
-    kv_updates = {
+    kv_updates: dict[str, Any] = {
         key: value
         for key, value in {
+            "stack": kv_stack,
             "lmcache_config_file": lmcache_config,
             "trace_file": trace_file,
             "random_fill": random_fill,
         }.items()
         if value is not None
     }
+    if hicache_path is not None:
+        kv_updates["hicache"] = cfg.kv.hicache.model_copy(update={"storage_path": hicache_path})
+    if kv_ranks is not None:
+        try:
+            # 'all' deliberately writes None, overriding a subset from the file.
+            kv_updates["active_ranks"] = parse_active_ranks(kv_ranks)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--kv-ranks") from exc
     if kv_updates:
         updates["kv"] = cfg.kv.model_copy(update=kv_updates)
     if updates:
@@ -232,14 +247,19 @@ def serve(
     console.print(f"  Instance ID: {cfg.instance_id}")
     console.print(f"  Server Type: {cfg.server.server_type}")
     console.print(f"  KV Stack: {cfg.kv.stack}")
-    console.print(
-        f"  LMCache Config: {cfg.kv.lmcache_config_file or 'LMCACHE_* env / defaults'}"
-    )
+    if cfg.kv.stack == "hicache":
+        console.print(f"  HiCache storage: {cfg.kv.hicache.storage_path} ({cfg.kv.hicache.write_policy}, modeled host tier)")
+    else:
+        console.print(f"  LMCache Config: {cfg.kv.lmcache_config_file or 'LMCACHE_* env / defaults'}")
     console.print(f"  Model: {cfg.server.model_profile}")
     console.print(f"  Hardware label: {cfg.gpu.gpu_profile} (rates are authoritative)")
     if cfg.timing.full_speed:
         console.print("  Timing: FULL SPEED (scheduler sleeps disabled; KV lifecycle unchanged)")
     console.print(f"  KV ranks: TP={cfg.gpu.tp_size}, PP={cfg.timing.pp_size}")
+    modeled_ranks = cfg.gpu.tp_size * cfg.timing.pp_size
+    active_ranks = resolve_active_ranks(modeled_ranks, cfg.kv.active_ranks)
+    manager = "HiCache" if cfg.kv.stack == "hicache" else "LMCache"
+    console.print(f"  Active {manager} ranks: {active_ranks} ({len(active_ranks)}/{modeled_ranks} modeled)")
 
     # Persist the fully-resolved config and point the app factory at it.
     # This survives uvicorn worker processes and --reload subprocesses,
@@ -254,7 +274,7 @@ def serve(
 
     data = cfg.model_dump(mode="json")
     for mapping, key in ((data, "profiles_file"), (data["kv"], "lmcache_config_file"),
-                         (data["kv"], "trace_file")):
+                         (data["kv"], "trace_file"), (data["kv"]["hicache"], "storage_path")):
         if mapping.get(key):
             mapping[key] = str(Path(mapping[key]).resolve())
     cfg = KVBenchConfig.model_validate(data)

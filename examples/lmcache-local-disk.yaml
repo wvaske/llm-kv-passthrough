@@ -6,17 +6,19 @@
 # under test owns them.
 #
 # Sizing note: KV bytes scale with the emulated model. For llama-3.1-8b
-# each token is 128 KiB of KV, so a 256-token chunk is a 32 MiB file.
+# at TP=1 each token is 128 KiB of KV, so a 256-token chunk is a 32 MiB file.
+# At TP=8 each rank stores 16 KiB/token, or 4 MiB per chunk. Selecting only
+# rank 0 writes one such file per chunk; all eight ranks write eight files.
 # Steady-state warmup fills (max_local_cpu_size + max_local_disk_size)
-# x fill-factor; size the tiers to what the storage under test should see.
+# x active-rank-count x fill-factor; size tiers for the storage under test.
 
 chunk_size: 256
 
-# L1: CPU memory tier (GB)
+# L1: CPU memory tier (GiB per active rank)
 local_cpu: true
 max_local_cpu_size: 0.25
 
-# L2: local disk tier (GB). Point this at the filesystem/device under test.
+# L2: local disk tier (GiB per active rank). Point at the device under test.
 local_disk: "file:///tmp/kvbench-cache/"
 max_local_disk_size: 0.5
 
