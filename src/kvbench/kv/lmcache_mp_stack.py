@@ -394,6 +394,8 @@ class LMCacheMPStack(KVStack):
                 "bytes_per_token": self.model.total_kv_cache_bytes_per_token,
                 "stored_bytes_per_token": self.bytes_per_token_per_rank * len(self.active_rank_ids),
                 "replicated_across_tp": self.replicated, **self.rank_selection,
+                "ranks": [{**r, "active": r["rank"] in self.active_rank_ids, "chunk_bytes": r["bytes_per_token"] * self.chunk_size}
+                          for r in self.layout],
                 "object_bytes": self.bytes_per_token_per_rank * self.chunk_size, "tp_size": self.tp_size,
                 "files_per_chunk": len(self.active_rank_ids), "vocab_size": self.model.vocab_size,
                 "l1_capacity_bytes": l1_total, "l2_capacity_bytes": l2_cap, "restore_window_chunks": self._window,
