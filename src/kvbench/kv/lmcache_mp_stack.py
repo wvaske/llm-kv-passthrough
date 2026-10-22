@@ -96,6 +96,7 @@ class LMCacheMPStack(KVStack):
         self._counts = {"l2_files_written": 0, "l2_bytes_written": 0, "l2_files_deleted": 0, "l2_bytes_deleted": 0,
                         "l2_loads": 0, "l1_reserve_retries": 0, "store_dropped_chunks": 0, "restore_windows": 0, "l1_pressure_retries": 0}
         self._sizes: dict[Any, int] = {}
+        self._digest_cache: tuple[Any, list[bytes]] | None = None
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -120,38 +121,52 @@ class LMCacheMPStack(KVStack):
             raise asyncio.CancelledError
         return result
 
+    def _digests(self, tokens: list[int], n_chunks: int) -> list[bytes]:
+        """Chained per-chunk hashes (like vLLM block hashes: chunk i depends on chunks 0..i), computed once per
+        token sequence and reused by every window of the same request (O(n) instead of O(n^2) per request)."""
+        cache = self._digest_cache
+        if cache is not None and cache[0] is tokens and len(cache[1]) >= n_chunks:
+            return cache[1]
+        import array
+
+        cs = self.chunk_size
+        out: list[bytes] = []
+        prev = hashlib.blake2b(self._namespace.encode(), digest_size=16).digest()
+        buf = array.array("q", tokens[:n_chunks * cs]).tobytes()
+        step = cs * 8
+        for c in range(n_chunks):
+            prev = hashlib.blake2b(prev + buf[c * step:(c + 1) * step], digest_size=16).digest()
+            out.append(prev)
+        self._digest_cache = (tokens, out)
+        return out
+
     def _keys(self, tokens: list[int], first_chunk: int, n_chunks: int) -> list[Any]:
         """Object keys in prefix order: chunk-major, kv_rank-minor (LMCache MP AttnWindowDesc stride)."""
         from lmcache.v1.distributed.api import ObjectKey
 
-        keys = []
-        h = hashlib.blake2b(digest_size=16, person=b"kvbench-mp")
-        h.update(self._namespace.encode())
-        cs = self.chunk_size
-        # rolling prefix hash so a chunk's key depends on the whole prefix (like vLLM block hashes)
-        import array
-
-        for c in range(first_chunk + n_chunks):
-            h.update(array.array("q", tokens[c * cs:(c + 1) * cs]).tobytes())
-            if c < first_chunk:
-                continue
-            digest = h.copy().digest()
-            for r in self.active_rank_ids:
-                keys.append(ObjectKey(chunk_hash=digest, model_name=self._namespace, kv_rank=r))
-        return keys
+        digests = self._digests(tokens, first_chunk + n_chunks)
+        return [ObjectKey(chunk_hash=digests[c], model_name=self._namespace, kv_rank=r)
+                for c in range(first_chunk, first_chunk + n_chunks) for r in self.active_rank_ids]
 
     def _fill(self, mem_obj: Any, key: Any) -> None:
+        """Incompressible, deterministic per-object payload (SFC64 stream seeded by the key, as the classic stack does)."""
         if not self.random_fill:
             return
         t = mem_obj.tensor
         if t is None:
             return
-        view = t.view(-1).view(__import__("torch").uint8)
-        seed = int.from_bytes(hashlib.blake2b(key.chunk_hash + key.kv_rank.to_bytes(2, "little"), digest_size=8).digest(), "little")
         import torch
 
-        g = torch.Generator().manual_seed(seed & 0x7FFFFFFFFFFFFFFF)
-        view.random_(0, 256, generator=g)
+        view = t.view(-1).view(torch.uint8)
+        seed = int.from_bytes(hashlib.blake2b(key.chunk_hash + key.kv_rank.to_bytes(2, "little"), digest_size=8).digest(), "little")
+        try:
+            import numpy as np
+            from kvbench.core.payload import fill_sfc64
+
+            fill_sfc64(view.numpy(), np.random.SFC64(seed))
+        except ImportError:   # older trees without kvbench.core.payload
+            g = torch.Generator().manual_seed(seed & 0x7FFFFFFFFFFFFFFF)
+            view.random_(0, 256, generator=g)
 
     # ---------------------------------------------------------------- lifecycle
     async def start(self) -> None:
