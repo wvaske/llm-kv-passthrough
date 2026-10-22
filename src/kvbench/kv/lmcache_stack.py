@@ -118,6 +118,9 @@ class LMCacheStack(KVStack):
             from lmcache.v1.metadata import LMCacheMetadata
         except ImportError as exc:
             raise RuntimeError("Install 'kvbench[lmcache]' to run a server; no inference GPU is required") from exc
+        from kvbench.kv import lmcache_compat
+
+        lmcache_compat.apply()  # LMCache 0.5.4 disk tier double-counts re-stored chunks; backport of the 0.5.6 fix
         if torch_device_type != "cpu":
             raise RuntimeError("V1 requires LMCache's CPU platform. Use `kvbench serve`, or hide accelerator devices "
                                "before importing Torch/LMCache in an embedded process (CUDA/HIP/ROCR_VISIBLE_DEVICES='').")
