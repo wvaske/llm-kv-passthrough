@@ -70,7 +70,23 @@ def create_kv_stack(config: KVBenchConfig) -> KVStack:
             reuse_history_entries=config.kv.lmcache_reuse_history_entries,
         )
 
+    if stack == "lmcache_mp":
+        from kvbench.kv.lmcache_mp_stack import LMCacheMPStack
+
+        return LMCacheMPStack(
+            model_profile=config.server.model_profile,
+            instance_id=config.instance_id,
+            config_file=config.kv.lmcache_mp_config_file,
+            random_fill=config.kv.random_fill,
+            tp_size=config.gpu.tp_size,
+            pp_size=config.timing.pp_size,
+            model=config.model,
+            max_chunk_mb=config.kv.max_chunk_mb,
+            seed=config.kv.seed,
+            active_ranks=config.kv.active_ranks,
+        )
+
     if stack == "kvbm":
         raise ValueError(_KVBM_UNAVAILABLE)
 
-    raise ValueError(f"Unknown KV stack: {stack!r}. Supported: lmcache, hicache")
+    raise ValueError(f"Unknown KV stack: {stack!r}. Supported: lmcache, lmcache_mp, hicache")
