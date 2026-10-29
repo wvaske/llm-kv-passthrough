@@ -25,7 +25,7 @@ USERS=16; DURATION=900; REQ_TIMEOUT=3600; FILL=1.05; WARM_CONC=4
 CPU_GB=2; DISK_GB=0; TIER_PCT=90; CHUNK=256; IO_THREADS=16; ODIRECT=true; POLICY=LRU
 ISL=32768; OSL=512; TURNS=8; SESSIONS=200; SEED=42     # synthetic stand-in shape (long multi-turn sessions)
 OUT=./agentx-runs; TAG=""; PORT=8201; KVB=""; AIPERF="${AIPERF:-aiperf}"; HOST_LABEL=$(hostname -s)
-HOTKV=""
+HOTKV=""; TOKENIZER=gpt2            # AIPerf tokenizer: gpt2 needs a HF cache; "builtin" needs no network
 
 while [ $# -gt 0 ]; do
   k=${1#--}; v=${2:-}; shift 2 || { echo "missing value for --$k" >&2; exit 2; }
@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
     users) USERS=$v;; duration) DURATION=$v;; req-timeout) REQ_TIMEOUT=$v;; fill) FILL=$v;; warm-conc) WARM_CONC=$v;;
     cpu-gb) CPU_GB=$v;; disk-gb) DISK_GB=$v;; tier-pct) TIER_PCT=$v;; chunk) CHUNK=$v;; io-threads) IO_THREADS=$v;; odirect) ODIRECT=$v;;
     cache-policy) POLICY=$v;; isl) ISL=$v;; osl) OSL=$v;; turns) TURNS=$v;; sessions) SESSIONS=$v;; seed) SEED=$v;;
-    out) OUT=$v;; tag) TAG=$v;; port) PORT=$v;; kvbench) KVB=$v;; aiperf) AIPERF=$v;; host-label) HOST_LABEL=$v;; hot-kv-gb) HOTKV=$v;;
+    out) OUT=$v;; tag) TAG=$v;; port) PORT=$v;; kvbench) KVB=$v;; aiperf) AIPERF=$v;; host-label) HOST_LABEL=$v;; hot-kv-gb) HOTKV=$v;; tokenizer) TOKENIZER=$v;;
     *) echo "unknown option --$k" >&2; exit 2;;
   esac
 done
@@ -119,7 +119,7 @@ for MODEL in "${MLIST[@]}"; do
   $FEED phase --out "$DASH" --run-id "$RUN" --phase load --message "AIPerf $WORKLOAD load: $USERS users x ${DURATION}s" --set "warmup_gib=${WARM_GB:-null}"
   log "[$RUN] load: $USERS users, ${DURATION}s, $WORKLOAD"
   HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0} timeout $((DURATION+REQ_TIMEOUT+900)) "$AIPERF" profile --url "http://localhost:$PORT" --model "$MODEL" \
-    --endpoint-type chat --streaming --tokenizer gpt2 --use-server-token-count --no-gpu-telemetry --no-server-metrics \
+    --endpoint-type chat --streaming --tokenizer "$TOKENIZER" --use-server-token-count --no-gpu-telemetry --no-server-metrics \
     --concurrency "$USERS" --benchmark-duration "$DURATION" --request-timeout-seconds "$REQ_TIMEOUT" $WL \
     --random-seed "$SEED" --ui none --artifact-dir "$W/aiperf" > "$W/aiperf.log" 2>&1; ARC=$?
   [ -n "${IOS:-}" ] && { kill "$IOS" 2>/dev/null; IOS=""; }
