@@ -118,7 +118,7 @@ for MODEL in "${MLIST[@]}"; do
   fi
   $FEED phase --out "$DASH" --run-id "$RUN" --phase load --message "AIPerf $WORKLOAD load: $USERS users x ${DURATION}s" --set "warmup_gib=${WARM_GB:-null}"
   log "[$RUN] load: $USERS users, ${DURATION}s, $WORKLOAD"
-  HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0} timeout $((DURATION+REQ_TIMEOUT+900)) "$AIPERF" profile --url "http://localhost:$PORT" --model "$MODEL" \
+  timeout $((DURATION+REQ_TIMEOUT+900)) "$AIPERF" profile --url "http://localhost:$PORT" --model "$MODEL" \
     --endpoint-type chat --streaming --tokenizer "$TOKENIZER" --use-server-token-count --no-gpu-telemetry --no-server-metrics \
     --concurrency "$USERS" --benchmark-duration "$DURATION" --request-timeout-seconds "$REQ_TIMEOUT" $WL \
     --random-seed "$SEED" --ui none --artifact-dir "$W/aiperf" > "$W/aiperf.log" 2>&1; ARC=$?
