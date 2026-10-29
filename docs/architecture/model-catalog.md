@@ -44,6 +44,7 @@ payload/scales. They describe explicit formats, not universal backend footprints
 | `glm-5.3-flash` | 11 BF16 NoPE MLA layers + 4:1 FP8 index | **11,627** | 4 |
 | `kimi-k3` | 24 BF16 absorbed gated MLA layers | **27,648** | 1 |
 | `kimi-linear-48b-a3b` | 7 BF16 absorbed MLA layers | **8,064** | 1 |
+| `muse-spark` | 16 BF16 GQA full-attention layers (46 SWA layers bounded) | **65,536** | 1 |
 
 ### DeepSeek: sharing, temporal compression and quantization scales
 
@@ -109,6 +110,29 @@ has **34 KDA + 11 DSA/MLA** layers, explicitly zero RoPE key dimensions, and
 The FP8 keys, FP32 scales, skipped index owners and BF16 pending rings are in
 [DSATokenToKVPool](https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/mem_cache/memory_pool.py)
 and [IndexKeyCache](https://github.com/sgl-project/sglang/blob/bf80732b926eabadbd6f54f702ffa74916a9121b/python/sglang/srt/mem_cache/index_key_cache.py).
+
+### Meta Muse Spark Open: only the 16 full-attention layers grow
+
+[Muse Spark Open](https://huggingface.co/meta-models/Muse-Spark-open-816B-A42B)
+(released 2026-10-15; added 2026-10-29) is an 816B-total / 42B-active MoE with
+62 decoder layers. Per the
+[NVIDIA NeMo coverage page](https://github.com/NVIDIA-NeMo/Automodel/blob/main/docs/model-coverage/vlm/meta-models/muse_spark_open.mdx)
+and the [SemiAnalysis InferenceX profile](https://inferencex.semianalysis.com/model/muse-spark-open),
+46 layers use a 2048-token sliding window with RoPE and 16 layers
+(zero-based indices 1, 5, ..., 61) attend over the full sequence without RoPE.
+Attention is GQA: 128 query heads over 16 KV heads of 64 dims, BF16.
+
+```text
+full-attention growth = 16 layers x 2 (K,V) x 16 heads x 64 x 2 bytes = 65,536 B/token
+sliding window (bounded) = 46 x 2048 x 4,096 B = 368 MiB per sequence
+```
+
+This reproduces the published ~64 GiB per 1M-token sequence and ~8.4 GiB at
+128K. The checkpoint `config.json` revision is **not pinned**: huggingface.co
+was unreachable from the authoring session, so the layer pattern was taken from
+secondary serving-recipe sources. Re-verify `layer_types`,
+`num_key_value_heads`, `head_dim` and `sliding_window` against the checkpoint
+before publishing numbers that depend on it. At TP=8 rank 0 carries 8 KiB/token.
 
 ### Kimi: NoPE does not discard the shared projection
 

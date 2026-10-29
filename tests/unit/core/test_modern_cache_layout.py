@@ -142,6 +142,24 @@ def test_comment_updates_do_not_change_cache_identity():
     assert replace(p, source_revision="a" * 40).cache_identity() != p.cache_identity()
 
 
+def test_muse_spark_exports_full_attention_layers_only():
+    p = get_model_profile("muse-spark")
+    # 16 NoPE full-attention owners at 1, 5, ..., 61; 16 KV heads x 64 dims x K,V in BF16.
+    assert p.effective_kv_layers == 16
+    assert p.total_kv_cache_bytes_per_token == 16 * 2 * 16 * 64 * 2 == 65536
+    growing = next(c for c in p.cache_components if c.export)
+    assert growing.layer_ids == tuple(range(1, 62, 4))
+    # Reproduces the published ~64 GiB / 1M tokens and ~8.4 GiB / 128K (with the 46 x 2048 window).
+    assert p.kv_cache_size_bytes(1048576) == 64 * 2**30
+    foot = p.cache_footprint(131072)
+    assert foot["window_bytes"] == 46 * 2048 * 2 * 16 * 64 * 2
+    assert abs((p.kv_cache_size_bytes(131072) + foot["window_bytes"]) / 2**30 - 8.36) < 0.01
+    assert p.cache_footprint(1048576)["window_bytes"] == foot["window_bytes"]
+    # TP=8 shards the 16 KV heads: rank 0 carries 8 KiB/token.
+    assert p.rank_layout(tp_size=8)[0]["bytes_per_token"] == 8192
+    assert p.source_repo == "meta-models/Muse-Spark-open-816B-A42B"
+
+
 def test_legacy_profiles_keep_the_old_identity_fields():
     p = get_model_profile("llama-3.1-8b")
     assert "cache_components" not in p.cache_identity()

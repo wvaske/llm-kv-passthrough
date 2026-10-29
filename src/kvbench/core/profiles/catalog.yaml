@@ -409,6 +409,42 @@ models:
         export: false
       - {name: kda_qkv_conv, layer_ids: *kimi_linear, heads: 32, elements_per_head: 1152, bits: 16, partition: sharded, scope: fixed, export: false}
 
+  muse-spark:
+    name: Meta Muse Spark Open 816B-A42B (hybrid SWA/GQA MoE)
+    layers: 62
+    hidden: 8192
+    kv_heads: 16
+    num_heads: 128
+    head_dim_override: 64
+    intermediate: 4096
+    vocab_size: 128256
+    max_seq_len: 1048576
+    params_billions_override: 42
+    total_params_billions: 816
+    weight_format: BF16 (NVFP4 variant published separately); BF16 KV
+    source_repo: meta-models/Muse-Spark-open-816B-A42B
+    verified_on: '2026-10-29'
+    source_urls:
+      - https://huggingface.co/meta-models/Muse-Spark-open-816B-A42B
+      - https://github.com/NVIDIA-NeMo/Automodel/blob/main/docs/model-coverage/vlm/meta-models/muse_spark_open.mdx
+      - https://inferencex.semianalysis.com/model/muse-spark-open
+      - https://huggingface.co/blog/meta-muse-spark-open
+    cache_notes: >-
+      Open-weight release of Meta's Muse Spark (2026-10-15). 62 MoE decoder
+      layers: 16 full-attention layers (NoPE, indices 1,5,...,61) own growing
+      KV; the other 46 use a 2048-token sliding window (RoPE) whose cache is
+      bounded, not exported. GQA with 16 KV heads x 64 dims in BF16:
+      16 x 2 x 16 x 64 x 2 = 65,536 B/token, which reproduces the published
+      ~64 GiB per 1M-token sequence and ~8.4 GiB at 128K. The checkpoint
+      config.json revision is not pinned: huggingface.co was unreachable from
+      the authoring session, so the layer pattern was cross-checked against
+      the NVIDIA NeMo coverage page, the SemiAnalysis InferenceX profile and
+      the vLLM/Fireworks recipes. Re-verify against config.json
+      (layer_types, num_key_value_heads=16, head_dim=64, sliding_window=2048).
+    cache_components:
+      - {name: gqa_kv, layer_ids: [1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61], heads: 16, elements_per_head: 128, bits: 16, partition: kv_heads}
+      - {name: sliding_window_kv, layer_ids: [0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15, 16, 18, 19, 20, 22, 23, 24, 26, 27, 28, 30, 31, 32, 34, 35, 36, 38, 39, 40, 42, 43, 44, 46, 47, 48, 50, 51, 52, 54, 55, 56, 58, 59, 60], heads: 16, elements_per_head: 128, bits: 16, partition: kv_heads, scope: window, window_tokens: 2048, export: false}
+
   # ---- Additional profiles (byte-geometry stand-ins) ----
   deepseek-r1-distill-32b: {name: DeepSeek-R1-Distill-Qwen 32B, layers: 64, hidden: 5120, kv_heads: 8, num_heads: 40, intermediate: 27648, vocab_size: 152064, max_seq_len: 131072}
   qwen3-30b-a3b: {name: Qwen3 30B-A3B (3.3B active), layers: 48, hidden: 2048, kv_heads: 4, num_heads: 32, head_dim_override: 128, intermediate: 6144, vocab_size: 151936, max_seq_len: 262144, params_billions_override: 3.3, total_params_billions: 30.5}
