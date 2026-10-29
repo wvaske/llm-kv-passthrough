@@ -107,8 +107,8 @@ for MODEL in "${MLIST[@]}"; do
     --set "kv_bytes_per_token_rank0=${BPT%% *}" --set "kv_bytes_per_token_model=${BPT##* }"
   "$KVBENCH" warmup --url "http://localhost:$PORT" --fill-factor "$FILL" --concurrency "$WARM_CONC" > "$W/warmup.log" 2>&1
   WARM_GB=$(grep -h "Warmup complete" "$W/warmup.log" | awk '{print $3}' | head -1)
-  log "[$RUN] warmup done (${WARM_GB:-?} GiB)"
-  sync; diskstat "$W/diskstats-before.txt"
+  log "[$RUN] warmup done (${WARM_GB:-?} GB)"
+  sync; diskstat "$W/diskstats-before.txt"; curl -s "localhost:$PORT/kvbench/state" > "$W/state-warm.json"
   command -v iostat >/dev/null && [ -n "$BLK" ] && { iostat -dxm "$BLK" 10 > "$W/iostat.log" 2>&1 & IOS=$!; }
   if [ "$WORKLOAD" = agentx ]; then
     if [ -n "$PUBLIC_DATASET" ]; then WL="--public-dataset $PUBLIC_DATASET"; else WL="--custom-dataset-type weka_trace --input-file $TRACES"; fi
@@ -128,7 +128,7 @@ for MODEL in "${MLIST[@]}"; do
   curl -s "localhost:$PORT/metrics" > "$W/metrics.prom"; ls "$CACHE" 2>/dev/null | wc -l > "$W/cache-files.txt"
   STATUS=ok; [ "$ARC" = 0 ] || STATUS=failed
   $FEED finish --out "$DASH" --run-id "$RUN" --status "$STATUS" --manifest "$W/manifest.json" --state "$W/state.json" --stats "$W/stats.json" \
-    --aiperf-dir "$W/aiperf" --disk-before "$W/diskstats-before.txt" --disk-after "$W/diskstats-after.txt" ${WARM_GB:+--warmup-gib "$WARM_GB"} \
+    --aiperf-dir "$W/aiperf" --disk-before "$W/diskstats-before.txt" --disk-after "$W/diskstats-after.txt" --state-warm "$W/state-warm.json" ${WARM_GB:+--warmup-gib "$WARM_GB"} \
     --note "$( [ "$ARC" = 0 ] && echo "aiperf exit 0" || echo "aiperf exit $ARC: $(grep -m1 -iE 'error' "$W/aiperf.log" | cut -c1-160)")"
   log "[$RUN] $STATUS; artifacts in $W"
   kill $SERVER_PID 2>/dev/null; wait $SERVER_PID 2>/dev/null; SERVER_PID=""

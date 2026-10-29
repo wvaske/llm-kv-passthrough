@@ -139,8 +139,13 @@ def cmd_finish(a: argparse.Namespace) -> None:
     cap = state.get("capacity", {})
     r0, w0 = _diskstats(a.disk_before)
     r1, w1 = _diskstats(a.disk_after)
-    submitted = float(kv.get("submitted_store_bytes") or 0)
     gib = 2**30
+    # LMCache's counters run from server start, so remove the warmup fill: from the post-warmup
+    # state snapshot when there is one, else from the warmup tool's reported GB.
+    warm_kv = _read_json(a.state_warm).get("kv_stats", {})
+    warm_bytes = float(warm_kv.get("submitted_store_bytes") or 0) or float(a.warmup_gib or 0) * 1e9
+    submitted = max(0.0, float(kv.get("submitted_store_bytes") or 0) - warm_bytes)
+    retrieved = max(0.0, float(kv.get("retrieved_bytes") or 0) - float(warm_kv.get("retrieved_bytes") or 0))
     for r in runs:
         if r.get("run_id") != a.run_id:
             continue
@@ -152,10 +157,11 @@ def cmd_finish(a: argparse.Namespace) -> None:
             "requests_total": stats.get("requests_total"), "requests_failed": stats.get("requests_failed"),
             "token_hit_rate": kv.get("token_hit_rate"), "stores": kv.get("stores"), "retrieves": kv.get("retrieves"),
             "lookup_tokens": kv.get("lookup_tokens"), "hit_tokens": kv.get("hit_tokens"),
-            "kv_submitted_gib": round(submitted / gib, 3), "kv_retrieved_gib": round(float(kv.get("retrieved_bytes") or 0) / gib, 3),
+            "kv_submitted_gib": round(submitted / gib, 3), "kv_retrieved_gib": round(retrieved / gib, 3),
+            "kv_counters_exclude_warmup": bool(warm_bytes),
             "disk_read_gib": round((r1 - r0) / gib, 3), "disk_write_gib": round((w1 - w0) / gib, 3),
             "disk_write_amp_vs_kv": round((w1 - w0) / submitted, 3) if submitted > 0 else None,
-            "warmup_gib": a.warmup_gib,
+            "warmup_gib": round(float(a.warmup_gib) * 1e9 / gib, 3) if a.warmup_gib is not None else None,
             "kvbench_version": manifest.get("fidelity"),
             "note": (r.get("note") or "") + (f" {a.note}" if a.note else ""),
         })
@@ -188,7 +194,7 @@ def main(argv: list[str]) -> int:
     s.add_argument("--message", default=""); s.add_argument("--set", action="append", help="key=json-value to store on the row")
     s = sub.add_parser("finish"); s.set_defaults(fn=cmd_finish)
     s.add_argument("--out", required=True); s.add_argument("--run-id", required=True); s.add_argument("--status", default="ok")
-    for name in ("manifest", "state", "stats", "aiperf-dir", "disk-before", "disk-after"):
+    for name in ("manifest", "state", "state-warm", "stats", "aiperf-dir", "disk-before", "disk-after"):
         s.add_argument(f"--{name}", default=None)
     s.add_argument("--warmup-gib", type=float, default=None); s.add_argument("--note", default="")
     s = sub.add_parser("event"); s.set_defaults(fn=cmd_event)
