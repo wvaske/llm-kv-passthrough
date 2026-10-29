@@ -53,8 +53,10 @@ sudo AIPERF=/root/aiperf-venv/bin/aiperf scripts/agentx/run_agentx_matrix.sh \
 - With no local trace copy, `--public-dataset semianalysis-cc-traces-weka`
   (or the `-with-subagents` variants) lets AIPerf download the dataset from
   Hugging Face.
-- `--tokenizer builtin` avoids a Hugging Face tokenizer download; the lab
-  default `gpt2` needs a populated HF cache.
+- `--tokenizer` names the AIPerf tokenizer: the lab default `gpt2` needs a
+  populated HF cache, `builtin` fetches tiktoken's o200k_base once, and a local
+  directory holding `tokenizer.json` + `tokenizer_config.json` works with no
+  network at all (run AIPerf without `HF_HUB_OFFLINE` for a local directory).
 - A zvol reports block I/O through `/proc/diskstats` like any disk, so the
   read/write deltas are valid; NAND-level write amplification is a property of
   the physical pool, not the zvol, and is not collected here.
